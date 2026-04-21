@@ -3,6 +3,9 @@
 #include "rknn_detector.h"
 #include <mutex>
 #include <signal.h>
+#include <fstream>
+#include <limits.h>
+#include <unistd.h>
 
 // 增加 RGA 硬件加速接口头文件
 #include "im2d_version.h"
@@ -25,6 +28,70 @@ std::mutex g_results_mutex[NUM_STREAMS];
 ThreadSafeQueue<VideoFrame> g_inference_queues[NUM_STREAMS]; 
 // 为四路输入独立设立 4 条专用的后端推流缓冲队列，彻底杜绝多路互挤导致掉帧！
 ThreadSafeQueue<VideoFrame> g_push_queues[NUM_STREAMS];
+
+static bool fileExists(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    return file.good();
+}
+
+static std::string getExecutableDir() {
+    char exe_path[PATH_MAX] = {0};
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (len <= 0) {
+        return ".";
+    }
+    exe_path[len] = '\0';
+    std::string full_path(exe_path);
+    size_t last_slash = full_path.find_last_of('/');
+    if (last_slash == std::string::npos) {
+        return ".";
+    }
+    return full_path.substr(0, last_slash);
+}
+
+static std::string parentDir(const std::string& path) {
+    size_t last_slash = path.find_last_of('/');
+    if (last_slash == std::string::npos || last_slash == 0) {
+        return ".";
+    }
+    return path.substr(0, last_slash);
+}
+
+static std::string getProjectRootDir() {
+    const std::string exe_dir = getExecutableDir();
+    std::string root = parentDir(exe_dir);
+    if (root.empty() || root == ".") {
+        char cwd[PATH_MAX] = {0};
+        if (getcwd(cwd, sizeof(cwd)) != nullptr) {
+            return std::string(cwd);
+        }
+        return ".";
+    }
+    return root;
+}
+
+static std::string resolveModelPath() {
+    const char* env_model = std::getenv("RKNN_MODEL_PATH");
+    if (env_model && env_model[0] != '\0' && fileExists(env_model)) {
+        return std::string(env_model);
+    }
+
+    const std::string exe_dir = getExecutableDir();
+    const std::vector<std::string> candidates = {
+        "./yolov8_face_fp.rknn",
+        "../yolov8_face_fp.rknn",
+        exe_dir + "/yolov8_face_fp.rknn",
+        exe_dir + "/../yolov8_face_fp.rknn"
+    };
+
+    for (const auto& path : candidates) {
+        if (fileExists(path)) {
+            return path;
+        }
+    }
+
+    return "";
+}
 
 // 真实的拉流与解码线程 (生产者 - Aquí 我们先使用 OpenCV 替代 MPP 来拉流获得真实像素)
 void streamPullerAndDecoderThread(int streamId, const std::string& stream_url) {
@@ -49,7 +116,8 @@ void streamPullerAndDecoderThread(int streamId, const std::string& stream_url) {
     } 
     else {
         // 本地 MP4 文件也走 GStreamer 管道 
-        std::string gst_pipeline = "uridecodebin uri=file:///home/kylin/kylin/process/" + stream_url + " ! videoconvert ! appsink sync=false max-buffers=5";
+        std::string local_file_uri = "file://" + getProjectRootDir() + "/" + stream_url;
+        std::string gst_pipeline = "uridecodebin uri=" + local_file_uri + " ! videoconvert ! appsink sync=false max-buffers=5";
         cap.open(gst_pipeline, cv::CAP_GSTREAMER);
         if (!cap.isOpened()) {
             std::cout << "[警告] 启用 GStreamer 加速播放文件失败，回退到普通读取..." << std::endl;
@@ -305,6 +373,14 @@ int main() {
 
     std::cout << "========== RK3588 AI Gateway 初始化 ==========\n";
 
+    const std::string model_path = resolveModelPath();
+    if (model_path.empty()) {
+        std::cerr << "[错误] 未找到 RKNN 模型文件 yolov8_face_fp.rknn。" << std::endl;
+        std::cerr << "[提示] 请将模型放在可执行文件目录或其上级目录，或设置环境变量 RKNN_MODEL_PATH。" << std::endl;
+        return 1;
+    }
+    std::cout << "[RKNN] 使用模型文件: " << model_path << std::endl;
+
     // 自定义 4 路媒体源 (这里兼容 USB 相机 /dev/videoX，RTSP 流地址，或者本地 MP4)
     std::vector<std::string> stream_sources = {
          "/dev/video74", // 第一路：刚刚插入的真实 USB 摄像头 (暂时注释掉排查)
@@ -322,8 +398,7 @@ int main() {
         pullers.emplace_back(streamPullerAndDecoderThread, i, stream_sources[i]);
     }
 
-    // 2. 启动核心 AI 推理线程 (消费者)，并传入真实 RKNN 离线模型路径
-    std::string model_path = "/home/kylin/kylin/process/yolov8_face_fp.rknn"; // 修改为您真实的模型名称
+    // 2. 启动核心 AI 推理线程 (消费者)
     
     // 使用独立的多核 NPU 线程！上半部分给 NPU 0 跑，下半部分给 NPU 1 跑！
     std::thread infer1(inferenceThread, model_path, std::vector<int>{0, 1}, 1);

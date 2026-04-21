@@ -4,8 +4,8 @@ set(CMAKE_DEPENDS_LANGUAGES
   )
 # The set of files for implicit dependencies of each language:
 set(CMAKE_DEPENDS_CHECK_CXX
-  "/home/kylin/kylin/rk3588_ai_gateway/src/main.cpp" "/home/kylin/kylin/rk3588_ai_gateway/build/CMakeFiles/RK3588_AI_Gateway.dir/src/main.cpp.o"
-  "/home/kylin/kylin/rk3588_ai_gateway/src/rknn_detector.cpp" "/home/kylin/kylin/rk3588_ai_gateway/build/CMakeFiles/RK3588_AI_Gateway.dir/src/rknn_detector.cpp.o"
+  "/home/kylin/kylin/rk3588_ai_gateway/src/main.cpp" "/home/kylin/kylin/rk3588_ai_gateway/build_fix/CMakeFiles/RK3588_AI_Gateway.dir/src/main.cpp.o"
+  "/home/kylin/kylin/rk3588_ai_gateway/src/rknn_detector.cpp" "/home/kylin/kylin/rk3588_ai_gateway/build_fix/CMakeFiles/RK3588_AI_Gateway.dir/src/rknn_detector.cpp.o"
   )
 set(CMAKE_CXX_COMPILER_ID "GNU")
 

@@ -162,11 +162,11 @@ code = code.replace(canvas_drawing_old, canvas_drawing_new)
 
 
 # 5. Modify main() to launch two inference threads
-main_old = """    std::string model_path = "/home/kylin/kylin/process/yolov8_face_fp.rknn"; // 修改为您真实的模型名称
+main_old = """    std::string model_path = "./yolov8_face_fp.rknn"; // 修改为您真实的模型名称
     std::thread infer(inferenceThread, model_path);
 
     // 3. 启动拼接与推流线程"""
-main_new = """    std::string model_path = "/home/kylin/kylin/process/yolov8_face_fp.rknn"; // 修改为您真实的模型名称
+main_new = """    std::string model_path = "./yolov8_face_fp.rknn"; // 修改为您真实的模型名称
     
     // 使用独立的多核 NPU 线程！上半部分给 NPU 0 跑，下半部分给 NPU 1 跑！
     std::thread infer1(inferenceThread, model_path, std::vector<int>{0, 1}, 1);

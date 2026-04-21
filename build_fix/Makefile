@@ -51,7 +51,7 @@ EQUALS = =
 CMAKE_SOURCE_DIR = /home/kylin/kylin/rk3588_ai_gateway
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /home/kylin/kylin/rk3588_ai_gateway/build
+CMAKE_BINARY_DIR = /home/kylin/kylin/rk3588_ai_gateway/build_fix
 
 #=============================================================================
 # Targets provided globally by CMake.
@@ -80,9 +80,9 @@ edit_cache/fast: edit_cache
 
 # The main all target
 all: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/kylin/kylin/rk3588_ai_gateway/build/CMakeFiles /home/kylin/kylin/rk3588_ai_gateway/build/CMakeFiles/progress.marks
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/kylin/kylin/rk3588_ai_gateway/build_fix/CMakeFiles /home/kylin/kylin/rk3588_ai_gateway/build_fix/CMakeFiles/progress.marks
 	$(MAKE) -f CMakeFiles/Makefile2 all
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/kylin/kylin/rk3588_ai_gateway/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/kylin/kylin/rk3588_ai_gateway/build_fix/CMakeFiles 0
 .PHONY : all
 
 # The main clean target

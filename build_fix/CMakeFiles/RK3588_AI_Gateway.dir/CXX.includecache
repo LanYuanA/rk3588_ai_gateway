@@ -98,20 +98,6 @@ im2d_buffer.h
 rga.h
 /home/kylin/kylin/rk3588_ai_gateway/src/rga.h
 
-/home/kylin/kylin/rk3588_ai_gateway/src/rknn_detector.cpp
-rknn_detector.h
-/home/kylin/kylin/rk3588_ai_gateway/src/rknn_detector.h
-fstream
--
-cstring
--
-chrono
--
-thread
--
-algorithm
--
-
 /usr/include/opencv4/opencv2/calib3d.hpp
 opencv2/core.hpp
 /usr/include/opencv4/opencv2/opencv2/core.hpp

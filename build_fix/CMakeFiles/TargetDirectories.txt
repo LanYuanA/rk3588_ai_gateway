@@ -1,0 +1,3 @@
+/home/kylin/kylin/rk3588_ai_gateway/build_fix/CMakeFiles/rebuild_cache.dir
+/home/kylin/kylin/rk3588_ai_gateway/build_fix/CMakeFiles/edit_cache.dir
+/home/kylin/kylin/rk3588_ai_gateway/build_fix/CMakeFiles/RK3588_AI_Gateway.dir

@@ -3,7 +3,7 @@
 
 # Relative path conversion top directories.
 set(CMAKE_RELATIVE_PATH_TOP_SOURCE "/home/kylin/kylin/rk3588_ai_gateway")
-set(CMAKE_RELATIVE_PATH_TOP_BINARY "/home/kylin/kylin/rk3588_ai_gateway/build")
+set(CMAKE_RELATIVE_PATH_TOP_BINARY "/home/kylin/kylin/rk3588_ai_gateway/build_fix")
 
 # Force unix paths in dependencies.
 set(CMAKE_FORCE_UNIX_PATHS 1)
