@@ -26,7 +26,7 @@ RKNNDetector::~RKNNDetector() {
     }
 }
 
-bool RKNNDetector::init(const std::string& model_path) {
+bool RKNNDetector::init(const std::string& model_path, int npu_core_index) {
     std::cout << "[RKNN] 正在加载模型: " << model_path << std::endl;
     int model_size = 0;
     model_data = load_file(model_path, &model_size);
@@ -42,14 +42,20 @@ bool RKNNDetector::init(const std::string& model_path) {
         return false;
     }
 
-    // ====== 解决 failed to submit 硬件死锁的核心修正 ======
-    // RK3588 有三个 NPU 核心(0, 1, 2)。旧版驱动在 Auto(多核自动调度) 模式下，面对极其高频的不等长帧送入时
-    // 常常会发生上下文状态竞速，直接导致 DMA 错误并报 failed to submit。
-    // 强制将当前模型上下文绑定到 CORE 0 即可完全解决不稳定：
-    rknn_core_mask core_mask = RKNN_NPU_CORE_0;
+    // 为每个推理线程绑定不同 NPU 核，降低多路并发下的上下文抢占风险。
+    rknn_core_mask core_mask = RKNN_NPU_CORE_AUTO;
+    if (npu_core_index == 0) {
+        core_mask = RKNN_NPU_CORE_0;
+    } else if (npu_core_index == 1) {
+        core_mask = RKNN_NPU_CORE_1;
+    } else if (npu_core_index == 2) {
+        core_mask = RKNN_NPU_CORE_2;
+    }
     int core_ret = rknn_set_core_mask(ctx, core_mask);
     if (core_ret < 0) {
         std::cerr << "[RKNN 警告] 绑定 NPU 核心失败，可能不影响继续： " << core_ret << std::endl;
+    } else {
+        std::cout << "[RKNN] 当前上下文 NPU Core 绑定索引: " << npu_core_index << std::endl;
     }
 
     // 获取模型输入输出的数量

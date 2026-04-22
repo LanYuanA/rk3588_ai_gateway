@@ -41,7 +41,7 @@
 克隆本项目到 RK3588 开发板：
 
 ```bash
-git clone https://github.com/YourName/RK3588_AI_Gateway.git
+git clone https://github.com/LanYuanA/RK3588_AI_Gateway.git
 cd RK3588_AI_Gateway
 mkdir build && cd build
 
@@ -83,7 +83,10 @@ rtsp://<RK3588_IP>:8554/gateway_out
 
 ---
 
-## 🏗️ 架构图 / Architecture Flow
+## 🏗️ 项目架构与文件说明 / Project Architecture & File Descriptions
+
+### 整体架构设计
+本项目采用多线程流水线架构，将视频处理流程分解为多个独立阶段，充分利用RK3588的硬件加速能力：
 
 1. **Pull Threads (输入层)**: FFmpeg / V4L2 多路解流 -> 转入帧队列。
 2. **NPU Threads (处理层)**: 多核心轮询取帧 -> RKNN_Inference -> 返回含 Bounding Box 坐标的结果。
@@ -92,6 +95,43 @@ rtsp://<RK3588_IP>:8554/gateway_out
    * **缩放**: 调起 **librga.so** 将画面缩小。
    * **拼接**: 调起 **librga.so** 进行 2x2 `imcopy` 至全局 1280x960 画布。
    * **编码与推流**: 原生 BGR 画布交由 GStreamer -> `videoconvert` (转换为YUV格式) -> `mpph264enc` (VPU极限H.264压缩) -> `rtspclientsink` -> TCP网络 -> MediaMTX。
+
+### 核心源文件说明
+
+#### 主要源文件 (src/)
+* **main.cpp**: 程序入口点，负责初始化应用上下文、启动各个工作线程、处理信号和程序生命周期管理。
+* **puller_thread.cpp**: 视频拉取线程实现，支持多种视频源（V4L2摄像头、RTSP流、本地文件），包含V4L2Capture类用于硬件摄像头捕获，新增RGA YUV转换器以减少CPU占用。
+* **inference_thread.cpp**: AI推理线程实现，使用RKNN-Toolkit2在NPU上执行YOLOv8人脸检测，包含线程安全的模型资源管理和推理结果处理。
+* **streamer_thread.cpp**: 视频流处理与推流线程，负责多路视频帧的RGA硬件拼接、目标检测结果标注、GStreamer编码管道管理。
+* **stitcher.cpp**: 2x2四宫格画面拼接算法实现，利用RGA硬件加速进行高效的图像缩放和拼接操作。
+* **rga_resize.cpp**: RGA硬件缩放功能封装，提供高效的图像尺寸变换，支持DMA32内存管理以避免4GB寻址限制。
+* **rga_yuv_converter.cpp**: 新增的RGA YUV格式转换模块，专门处理YUV到BGR的颜色空间转换，显著降低CPU占用率。
+* **app_context.cpp**: 应用程序全局上下文管理，包含共享资源、配置参数和系统状态管理。
+* **app_runtime.cpp**: 应用运行时环境配置，包括线程池管理、资源清理和系统信号处理。
+* **app_lifecycle.cpp**: 应用生命周期管理，处理程序启动、运行和关闭过程中的各种状态转换。
+* **app_thread_utils.cpp**: 线程工具函数集合，提供线程安全的队列操作、同步机制和线程池管理。
+
+#### 头文件 (include/)
+* **common.h**: 通用常量定义、类型别名和宏定义。
+* **app_context.h**: 应用上下文类声明，定义全局共享数据结构。
+* **inference_thread.h**: 推理线程类声明，定义AI处理相关接口。
+* **puller_thread.h**: 拉流线程类声明，定义视频拉取相关接口。
+* **streamer_thread.h**: 推流线程类声明，定义视频处理和推流接口。
+* **stitcher.h**: 拼接器类声明，定义画面拼接相关接口。
+* **rga_resize.h**: RGA缩放功能接口声明。
+* **rga_yuv_converter.h**: RGA YUV转换器接口声明。
+* **rknn_detector.h**: RKNN检测器类声明，封装NPU推理接口。
+* **ThreadSafeQueue.h**: 线程安全队列模板类声明，用于线程间数据传递。
+* **app_lifecycle.h**: 应用生命周期管理接口声明。
+* **app_model.h**: 应用模型管理接口声明。
+* **app_runtime.h**: 应用运行时环境接口声明。
+* **app_thread_utils.h**: 线程工具函数接口声明。
+* **drmrga.h, GrallocOps.h, im2d_*.h, rga.h, RgaApi.h, RockchipRga.h**: RGA图形加速库相关头文件。
+
+### 硬件加速组件
+* **NPU (Neural Processing Unit)**: 用于AI推理加速，支持YOLOv8等深度学习模型的高效执行。
+* **RGA (Raster Graphic Acceleration Unit)**: 用于图像处理加速，包括缩放、格式转换、拼接等操作。
+* **VPU (Video Processing Unit)**: 用于视频编解码加速，通过MPP库实现高效的H.264编码。
 
 ---
 

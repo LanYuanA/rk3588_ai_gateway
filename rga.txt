@@ -1,0 +1,53 @@
+querystring： 查询获取当前芯片平台RGA硬件版本与功能支持信息，以字符串的形式返回。
+imcheckHeader: 校验当前使用头文件版本与librga版本差异。
+importbuffer_T： 将外部内存（dma_fd、虚拟地址、物理地址）导入RGA驱动内部，实现硬件快速访问物理连续/非物理连续的内存。
+releasebuffer_handle： 将外部buffer从RGA驱动内部解除引用与映射。
+wrapbuffer_handle： 快速封装图像缓冲区结构（rga_buffer_t）。
+imbeginJob：创建RGA图像处理任务。
+imendJob： 提交并执行RGA图像处理任务。
+imcancelJob： 取消并删除RGA图像处理任务。
+imcopy： 调用RGA实现快速图像拷贝操作。
+imcopyTask： 向RGA图像任务中添加快速图像拷贝操作。
+imresize： 调用RGA实现快速图像缩放操作。
+imresizeTask： 向RGA图像任务中添加快速图像缩放操作。
+impyramind： 调用RGA实现快速图像金字塔操作。
+imcrop： 调用RGA实现快速图像裁剪操作。
+imcropTask： 向RGA图像任务中添加快速图像裁剪操作。
+imtranslate： 调用RGA实现快速图像平移操作。
+imtranslateTask： 向RGA图像任务中添加快速图像平移操作。
+imcvtcolor： 调用RGA实现快速图像格式转换。
+imcvtcolorTask： 向RGA图像任务中添加快速图像格式转换。
+imrotate： 调用RGA实现快速图像旋转操作。
+imrotateTask： 向RGA图像任务中添加快速图像旋转操作。
+imflip： 调用RGA实现快速图像翻转操作。
+imflipTask： 向RGA图像任务中添加快速图像翻转操作。
+imblend： 调用RGA实现双通道快速图像合成操作。
+imblendTask： 向RGA图像任务中添加双通道快速图像合成操作。
+imcomposite： 调用RGA实现三通道快速图像合成操作。
+imcompositeTask： 向RGA图像任务中添加三通道快速图像合成操作。
+imcolorkey： 调用RGA实现快速图像颜色键操作。
+imcolorkeyTask： 向RGA图像任务中添加快速图像颜色键操作。
+imosd：调用RGA实现快速图像OSD字幕叠加。
+imosdTask：向RGA图像任务中添加快速图像OSD字幕叠加。
+imquantize： 调用RGA实现快速图像运算点前处理（量化）操作。
+imquantizeTask： 向RGA图像任务中添加快速图像运算点前处理（量化）操作。
+imrop： 调用RGA实现快速图像光栅操作。
+imropTask： 向RGA图像任务中添加快速图像光栅操作。
+imfill： 调用RGA实现快速图像填充操作。
+imfillArray： 调用RGA实现多组快速图像填充操作。
+imfillTask： 向RGA图像任务中添加快速图像填充操作。
+imfillTaskArray： 向RGA图像任务中添加多组快速图像填充操作。
+imrectangle： 调用RGA实现等距矩形边框快速绘制操作。
+imrectangleArray： 调用RGA实现多组等距矩形边框快速绘制操作。
+imrectangleTask： 向RGA图像任务中添加等距矩形边框快速绘制操作。
+imrectangleTaskArray： 向RGA图像任务中添加多组等距矩形边框快速绘制操作。
+immakeBorder： 调用RGA实现矩形边框快速绘制操作。
+immosaic：调用RGA实现快速图像马赛克遮盖。
+immosaicArray：调用RGA实现快速图像马赛克遮盖。
+immosaicTask：向RGA图像任务中添加快速图像马赛克遮盖。
+immosaicTaskArray：向RGA图像任务中添加快速图像马赛克遮盖。
+improcess： 调用RGA实现快速图像复合处理操作。
+improcessTask： 向RGA图像任务中添加快速图像复合处理操作。
+imcheck： 校验参数是否合法，以及当前硬件是否支持该操作。
+imsync： 用于异步模式时，同步任务完成状态。
+imconfig： 向当前线程上下文添加默认配置。

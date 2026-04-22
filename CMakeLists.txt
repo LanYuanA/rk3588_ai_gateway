@@ -17,8 +17,22 @@ find_library(RKNN_RUNTIME rknnrt)
 # 设置头文件包含路径 (请确保环境里有 rknn_api.h，通常在 /usr/include/)
 include_directories(${CMAKE_SOURCE_DIR}/include ${OpenCV_INCLUDE_DIRS})
 
-# 收集所有的源文件
-file(GLOB_RECURSE SOURCES "src/*.cpp")
+# 显式列出源文件，避免重构后遗漏模块
+set(SOURCES
+	src/main.cpp
+	src/rknn_detector.cpp
+	src/app_context.cpp
+	src/app_model.cpp
+	src/app_runtime.cpp
+	src/app_lifecycle.cpp
+	src/app_thread_utils.cpp
+	src/puller_thread.cpp
+	src/rga_resize.cpp
+	src/rga_yuv_converter.cpp
+	src/inference_thread.cpp
+	src/stitcher.cpp
+	src/streamer_thread.cpp
+)
 
 # 生成可执行文件
 add_executable(${PROJECT_NAME} ${SOURCES})
