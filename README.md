@@ -11,9 +11,9 @@
 * **🧠 极致 NPU 推理加速 (RKNN)**
   采用瑞芯微 RKNN-Toolkit2，将 YOLOv8 等深度学习模型真正下发到板载 6TOPS NPU 上运行。项目内实现了多线程绑定实体 NPU Core（RK3588 拥有 3 个 NPU 核心）做并发推理，避免锁竞争。
 * **⚡ RGA 硬件级缩放与拼接**
-  弃用耗费 CPU 的 `cv::resize`，使用 RK3588 专属的 2D 图形加速引擎 (librga)，实现超低延迟的视频帧缩放、色彩空间转换与 2x2 四宫格画中画拼接。
+  弃用耗费 CPU 的 `cv::resize`，使用 RK3588 专属的 2D 图形加速引擎 (librga)，实现超低延迟的视频帧缩放、色彩空间转换与 2x2 四宫格画中画拼接。新增RGA YUV转换器，专门处理YUV到BGR的颜色空间转换，显著降低CPU占用率。
 * **🎬 MPP 硬件 H.264 编码 (mpph264enc)**
-  利用 RK3588 的 VPU (Video Processing Unit)，摒弃软解软编。借助 GStreamer 的 `mpph264enc` 插件进行全硬件视频流压缩，不再让 CPU 温度爆表。
+  利用 RK3588 的 VPU (Video Processing Unit)，摒弃软解软编。借助 GStreamer 的 `mpph264enc` 插件进行全硬件视频流压缩，不再让 CPU 温度爆表。MPP解码和编码使用独立的硬件单元，可同时工作而不产生资源冲突。
 * **🌐 RTSP / RTMP 低延迟推流**
   无缝对接开源流媒体引擎 [MediaMTX](https://github.com/bluenviron/mediamtx)。通过精简组合 `appsrc ! videoconvert ! mpph264enc ! rtspclientsink` 管道，将处理完毕的安防/直播网格流反推给服务端，适用于大屏监控或云端分发。
 * **🧵 高效多线程流水线 (Pipeline)**

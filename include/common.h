@@ -13,6 +13,7 @@
 struct VideoFrame {
     int stream_id;      // 流的编号 (0~3)
     uint64_t frame_id;  // 帧序号
+    int64_t timestamp_ms = 0; // 时间戳字段保留，但不再使用
     cv::Mat image;      // 真实的图像数据矩阵 (OpenCV)
 };
 

@@ -1,20 +1,21 @@
 #include "rga_yuv_converter.h"
-#include <opencv2/opencv.hpp>
 
+#include <algorithm>
 #include <cstring>
 #include <fcntl.h>
 #include <iostream>
+#include <memory>
 #include <unordered_map>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
-#if __has_include(<linux/dma-heap.h>)
-#include <linux/dma-heap.h>
-#define RK_HAS_DMA_HEAP_HEADER 1
-#else
-#define RK_HAS_DMA_HEAP_HEADER 0
-#endif
+// #if __has_include(<linux/dma-heap.h>)
+// #include <linux/dma-heap.h>
+// #define RK_HAS_DMA_HEAP_HEADER 1
+// #else
+// #define RK_HAS_DMA_HEAP_HEADER 0
+// #endif
 
 #include "im2d_version.h"
 #include "im2d_buffer.h"
@@ -25,14 +26,23 @@
 
 namespace {
 
-class Dma32RgaBuffer {
+/**
+ * \brief 使用普通内存的RGA缓冲区类，仅使用RGA3核心
+ */
+class RgaBuffer {
 public:
-    ~Dma32RgaBuffer() {
+    ~RgaBuffer() {
         release();
     }
 
-    bool ensure(size_t requested_size, const std::string& heap_path) {
-#if RK_HAS_DMA_HEAP_HEADER
+    /**
+     * \brief 确保分配指定大小的内存
+     * \param requested_size 请求的内存大小
+     * \return 成功返回true，失败返回false
+     * 
+     * 注意：此函数使用普通内存分配，仅适用于RGA3核心
+     */
+    bool ensure(size_t requested_size) {
         if (requested_size == 0) {
             return false;
         }
@@ -41,39 +51,20 @@ public:
         }
         release();
 
-        heap_fd_ = ::open(heap_path.c_str(), O_RDWR | O_CLOEXEC);
-        if (heap_fd_ < 0) {
-            return false;
-        }
-
-        dma_heap_allocation_data alloc_data{};
-        alloc_data.len = requested_size;
-        alloc_data.fd_flags = O_RDWR | O_CLOEXEC;
-        alloc_data.heap_flags = 0;
-        if (ioctl(heap_fd_, DMA_HEAP_IOCTL_ALLOC, &alloc_data) < 0) {
-            release();
-            return false;
-        }
-
-        buffer_fd_ = alloc_data.fd;
-        mapped_addr_ = mmap(nullptr, requested_size, PROT_READ | PROT_WRITE, MAP_SHARED, buffer_fd_, 0);
+        // 使用mmap分配内存，而不是DMA heap
+        mapped_addr_ = mmap(nullptr, requested_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (mapped_addr_ == MAP_FAILED) {
-            release();
             return false;
         }
 
         size_ = requested_size;
-        handle_ = importbuffer_fd(buffer_fd_, static_cast<int>(requested_size));
+        // 将分配的虚拟内存导入RGA驱动，使其能够被RGA硬件访问
+        handle_ = importbuffer_virtualaddr(mapped_addr_, static_cast<int>(requested_size));
         if (handle_ == 0) {
             release();
             return false;
         }
         return true;
-#else
-        (void)requested_size;
-        (void)heap_path;
-        return false;
-#endif
     }
 
     void release() {
@@ -85,14 +76,6 @@ public:
             munmap(mapped_addr_, size_);
             mapped_addr_ = MAP_FAILED;
         }
-        if (buffer_fd_ >= 0) {
-            ::close(buffer_fd_);
-            buffer_fd_ = -1;
-        }
-        if (heap_fd_ >= 0) {
-            ::close(heap_fd_);
-            heap_fd_ = -1;
-        }
         size_ = 0;
     }
 
@@ -100,21 +83,23 @@ public:
     rga_buffer_handle_t handle() const { return handle_; }
 
 private:
-    int heap_fd_ = -1;
-    int buffer_fd_ = -1;
     void* mapped_addr_ = MAP_FAILED;
     size_t size_ = 0;
     rga_buffer_handle_t handle_ = 0;
 };
 
 struct RgaYuvRuntimeCache {
-    Dma32RgaBuffer src_dma;
-    Dma32RgaBuffer dst_dma;
+    RgaBuffer src_buffer;
+    RgaBuffer dst_buffer;
 };
 
 RgaYuvRuntimeCache& cacheForYuvContext(RgaYuvConverterContext* context) {
-    static std::unordered_map<RgaYuvConverterContext*, RgaYuvRuntimeCache> caches;
+    thread_local std::unordered_map<RgaYuvConverterContext*, RgaYuvRuntimeCache> caches;
     return caches[context];
+}
+
+int alignUp(int value, int alignment) {
+    return ((value + alignment - 1) / alignment) * alignment;
 }
 
 } // namespace
@@ -126,6 +111,7 @@ void initializeRgaYuvConverterContext(int stream_id,
                                       RgaYuvConverterContext& context) {
     context.use_rga_conversion = use_rga_conversion;
     context.current_use_dma32 = true;
+    context.conversion_fused_off = false;
 
     if (!use_dma32_for_rga) {
         std::cerr << "[RGA-YUV] RK_RGA_USE_DMA32=0 已被忽略：当前版本强制 DMA32 模式以避免 >4G 风险。"
@@ -151,7 +137,8 @@ void initializeRgaYuvConverterContext(int stream_id,
         scheduler_core = (stream_id % 2 == 0) ? IM_SCHEDULER_RGA3_CORE0 : IM_SCHEDULER_RGA3_CORE1;
     }
 
-    IM_STATUS cfg_ret = imconfig(IM_CONFIG_SCHEDULER_CORE, scheduler_core);
+    context.scheduler_core = scheduler_core;
+    IM_STATUS cfg_ret = imconfig(IM_CONFIG_SCHEDULER_CORE, context.scheduler_core);
     if (cfg_ret != IM_STATUS_SUCCESS && cfg_ret != IM_STATUS_NOERROR) {
         std::cerr << "[RGA-YUV] stream " << stream_id
                   << " 调度核心配置失败，将回退 CPU 转换。错误: "
@@ -189,7 +176,7 @@ bool convertYuv422ToBgrWithRga(void* src_buffer,
         return false;
     }
 
-    IM_STATUS cfg_runtime_ret = imconfig(IM_CONFIG_SCHEDULER_CORE, IM_SCHEDULER_RGA3_CORE0);
+    IM_STATUS cfg_runtime_ret = imconfig(IM_CONFIG_SCHEDULER_CORE, context.scheduler_core);
     if (cfg_runtime_ret != IM_STATUS_SUCCESS && cfg_runtime_ret != IM_STATUS_NOERROR) {
         context.conversion_fused_off = true;
         std::cerr << "[RGA-YUV] 运行时调度配置失败，熔断到 CPU。错误: "
@@ -200,53 +187,67 @@ bool convertYuv422ToBgrWithRga(void* src_buffer,
     RgaYuvRuntimeCache& runtime_cache = cacheForYuvContext(&context);
     IM_STATUS rga_status = IM_STATUS_FAILED;
 
-    // 计算源数据大小 (YUV422: 每像素2字节)
-    const size_t src_bytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 2;
-    // 目标数据大小 (BGR888: 每像素3字节)
-    const size_t dst_bytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 3;
+    // 根据官方示例，使用正确的stride计算方式
+    const int src_bpp = 2; // YUV422每个像素2字节
+    const int dst_bpp = 3; // BGR每个像素3字节
+    const int src_stride = width * src_bpp;  // 官方示例中使用实际像素宽度*字节数
+    const int dst_stride = width * dst_bpp;  // 官方示例中使用实际像素宽度*字节数
+    const size_t src_bytes = static_cast<size_t>(src_stride) * static_cast<size_t>(height);
+    const size_t dst_bytes = static_cast<size_t>(dst_stride) * static_cast<size_t>(height);
 
-    bool src_ok = runtime_cache.src_dma.ensure(src_bytes, dma_heap_path);
-    bool dst_ok = runtime_cache.dst_dma.ensure(dst_bytes, dma_heap_path);
+    // 为RGA可能的内部对齐需求预留额外空间
+    const size_t src_padding = 4096; // 预留4KB对齐空间
+    const size_t dst_padding = 4096; // 预留4KB对齐空间
+    const size_t aligned_src_bytes = src_bytes + src_padding;
+    const size_t aligned_dst_bytes = dst_bytes + dst_padding;
+
+    bool src_ok = runtime_cache.src_buffer.ensure(aligned_src_bytes);
+    bool dst_ok = runtime_cache.dst_buffer.ensure(aligned_dst_bytes);
     
     if (src_ok && dst_ok) {
-        // 复制源数据到DMA缓冲区
-        unsigned char* src_ptr = reinterpret_cast<unsigned char*>(runtime_cache.src_dma.addr());
+        // 复制源数据到缓冲区
+        unsigned char* src_ptr = reinterpret_cast<unsigned char*>(runtime_cache.src_buffer.addr());
         unsigned char* src_original = reinterpret_cast<unsigned char*>(src_buffer);
-        
-        // 如果bytes_per_line与width*2不同，则需要逐行复制
-        if (static_cast<int>(width * 2) == bytes_per_line) {
-            // 数据连续，直接复制整个块
-            std::memcpy(src_ptr, src_original, src_bytes);
-        } else {
-            // 逐行复制，处理padding
-            for (int y = 0; y < height; ++y) {
-                std::memcpy(src_ptr + static_cast<size_t>(y) * static_cast<size_t>(width) * 2,
-                            src_original + static_cast<size_t>(y) * static_cast<size_t>(bytes_per_line),
-                            static_cast<size_t>(width) * 2);
-            }
+        std::memset(src_ptr, 0, aligned_src_bytes);  // 清零整个缓冲区
+
+        // 按照官方示例的方式复制数据
+        const int copy_bytes = std::min(bytes_per_line, src_stride);
+        for (int y = 0; y < height; ++y) {
+            std::memcpy(src_ptr + static_cast<size_t>(y) * static_cast<size_t>(src_stride),
+                        src_original + static_cast<size_t>(y) * static_cast<size_t>(bytes_per_line),
+                        static_cast<size_t>(copy_bytes));
         }
 
-        // 创建RGA缓冲区描述符
-        rga_buffer_t src_img = wrapbuffer_handle(runtime_cache.src_dma.handle(),
-                                                 width,
-                                                 height,
-                                                 RK_FORMAT_YUYV_422,
-                                                 width * 2,  // stride
-                                                 height);
+        // 使用参考代码的方法，直接使用wrapbuffer_virtualaddr
+        rga_buffer_t src_img = wrapbuffer_virtualaddr(src_ptr, width, height, RK_FORMAT_YUYV_422);
+        rga_buffer_t dst_img = wrapbuffer_virtualaddr(runtime_cache.dst_buffer.addr(), width, height, RK_FORMAT_BGR_888);
 
-        rga_buffer_t dst_img = wrapbuffer_handle(runtime_cache.dst_dma.handle(),
-                                                 width,
-                                                 height,
-                                                 RK_FORMAT_BGR_888,
-                                                 width * 3,  // stride
-                                                 height);
+        // 设置源和目标矩形区域
+        im_rect src_rect = {0, 0, width, height};
+        im_rect dst_rect = {0, 0, width, height};
 
-        // 执行YUV到BGR的转换
+        // 按照官方示例进行参数检查
+        IM_STATUS check_ret = imcheck(src_img, dst_img, src_rect, dst_rect);
+        if (check_ret != IM_STATUS_NOERROR && check_ret != IM_STATUS_SUCCESS) {
+            std::cerr << "[RGA-YUV] 422 参数预检失败: " << imStrError(check_ret)
+                      << " width=" << width
+                      << " height=" << height
+                      << " bytes_per_line=" << bytes_per_line
+                      << " src_stride=" << src_stride
+                      << " dst_stride=" << dst_stride
+                      << std::endl;
+            rga_status = check_ret;
+            context.conversion_fused_off = true;
+            return false;
+        }
+
+        // 按照官方示例执行YUV到BGR的转换
         rga_status = imcvtcolor(src_img, dst_img, RK_FORMAT_YUYV_422, RK_FORMAT_BGR_888);
         
         if (rga_status == IM_STATUS_SUCCESS) {
-            // 创建OpenCV Mat视图，不需要额外内存分配
-            dst_bgr_frame = cv::Mat(height, width, CV_8UC3, runtime_cache.dst_dma.addr(), width * 3);
+            // 创建临时OpenCV Mat并复制到目标Mat
+            cv::Mat temp_mat(height, width, CV_8UC3, runtime_cache.dst_buffer.addr(), dst_stride);
+            temp_mat.copyTo(dst_bgr_frame);  // 复制到目标Mat，避免生命周期问题
             return true;
         }
     } else {
@@ -270,7 +271,7 @@ bool convertYuv420ToBgrWithRga(void* src_buffer,
         return false;
     }
 
-    IM_STATUS cfg_runtime_ret = imconfig(IM_CONFIG_SCHEDULER_CORE, IM_SCHEDULER_RGA3_CORE0);
+    IM_STATUS cfg_runtime_ret = imconfig(IM_CONFIG_SCHEDULER_CORE, context.scheduler_core);
     if (cfg_runtime_ret != IM_STATUS_SUCCESS && cfg_runtime_ret != IM_STATUS_NOERROR) {
         context.conversion_fused_off = true;
         std::cerr << "[RGA-YUV] 运行时调度配置失败，熔断到 CPU。错误: "
@@ -281,44 +282,61 @@ bool convertYuv420ToBgrWithRga(void* src_buffer,
     RgaYuvRuntimeCache& runtime_cache = cacheForYuvContext(&context);
     IM_STATUS rga_status = IM_STATUS_FAILED;
 
-    // 计算YUV420数据大小 (Y分量 + UV分量 = width*height + width*height/2)
-    const size_t y_size = static_cast<size_t>(width) * static_cast<size_t>(height);
-    const size_t uv_size = y_size / 2; // U和V各占一半
-    const size_t src_bytes = y_size + uv_size;
-    // 目标数据大小 (BGR888: 每像素3字节)
-    const size_t dst_bytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 3;
+    // 计算NV12格式的正确大小
+    const int y_size = width * height;
+    const int uv_size = width * height / 2; // UV交错存储
+    const int src_total_size = y_size + uv_size; // NV12总大小
+    const int dst_bpp = 3; // BGR每个像素3字节
+    const int dst_stride = width * dst_bpp;
+    const size_t dst_bytes = static_cast<size_t>(dst_stride) * static_cast<size_t>(height);
 
-    bool src_ok = runtime_cache.src_dma.ensure(src_bytes, dma_heap_path);
-    bool dst_ok = runtime_cache.dst_dma.ensure(dst_bytes, dma_heap_path);
+    // 为RGA可能的内部对齐需求预留额外空间
+    const size_t src_padding = 4096; // 预留4KB对齐空间
+    const size_t dst_padding = 4096; // 预留4KB对齐空间
+    const size_t aligned_src_bytes = src_total_size + src_padding;
+    const size_t aligned_dst_bytes = dst_bytes + dst_padding;
+
+    bool src_ok = runtime_cache.src_buffer.ensure(aligned_src_bytes);
+    bool dst_ok = runtime_cache.dst_buffer.ensure(aligned_dst_bytes);
     
     if (src_ok && dst_ok) {
-        // 复制源数据到DMA缓冲区
-        unsigned char* src_ptr = reinterpret_cast<unsigned char*>(runtime_cache.src_dma.addr());
+        // 复制源数据到缓冲区 - 直接复制整个NV12缓冲区
+        unsigned char* src_ptr = reinterpret_cast<unsigned char*>(runtime_cache.src_buffer.addr());
         unsigned char* src_original = reinterpret_cast<unsigned char*>(src_buffer);
         
-        std::memcpy(src_ptr, src_original, src_bytes);
+        std::memset(src_ptr, 0, aligned_src_bytes);
+        std::memcpy(src_ptr, src_original, src_total_size); // 复制完整的NV12数据
 
-        // 创建RGA缓冲区描述符 (NV12格式，YUV420的一种)
-        rga_buffer_t src_img = wrapbuffer_handle(runtime_cache.src_dma.handle(),
-                                                 width,
-                                                 height,
-                                                 RK_FORMAT_YCbCr_420_SP,  // NV12格式
-                                                 width,                   // stride
-                                                 height);
+        // 使用参考代码的方法，直接使用wrapbuffer_virtualaddr
+        unsigned char* src_ptr_nv12 = reinterpret_cast<unsigned char*>(runtime_cache.src_buffer.addr());
+        unsigned char* dst_ptr = reinterpret_cast<unsigned char*>(runtime_cache.dst_buffer.addr());
+        
+        rga_buffer_t src_img = wrapbuffer_virtualaddr(src_ptr_nv12, width, height, RK_FORMAT_YCbCr_420_SP);
+        rga_buffer_t dst_img = wrapbuffer_virtualaddr(dst_ptr, width, height, RK_FORMAT_BGR_888);
 
-        rga_buffer_t dst_img = wrapbuffer_handle(runtime_cache.dst_dma.handle(),
-                                                 width,
-                                                 height,
-                                                 RK_FORMAT_BGR_888,
-                                                 width * 3,  // stride
-                                                 height);
+        // 设置源和目标矩形区域
+        im_rect src_rect = {0, 0, width, height};
+        im_rect dst_rect = {0, 0, width, height};
+
+        // 按照官方示例进行参数检查
+        IM_STATUS check_ret = imcheck(src_img, dst_img, src_rect, dst_rect);
+        if (check_ret != IM_STATUS_NOERROR && check_ret != IM_STATUS_SUCCESS) {
+            std::cerr << "[RGA-YUV] 420 参数预检失败: " << imStrError(check_ret)
+                      << " width=" << width
+                      << " height=" << height
+                      << std::endl;
+            rga_status = check_ret;
+            context.conversion_fused_off = true;
+            return false;
+        }
 
         // 执行YUV到BGR的转换
         rga_status = imcvtcolor(src_img, dst_img, RK_FORMAT_YCbCr_420_SP, RK_FORMAT_BGR_888);
         
         if (rga_status == IM_STATUS_SUCCESS) {
-            // 创建OpenCV Mat视图，不需要额外内存分配
-            dst_bgr_frame = cv::Mat(height, width, CV_8UC3, runtime_cache.dst_dma.addr(), width * 3);
+            // 创建临时OpenCV Mat并复制到目标Mat以避免生命周期问题
+            cv::Mat temp_mat(height, width, CV_8UC3, runtime_cache.dst_buffer.addr(), dst_stride);
+            temp_mat.copyTo(dst_bgr_frame);  // 复制到目标Mat，避免生命周期问题
             return true;
         }
     } else {

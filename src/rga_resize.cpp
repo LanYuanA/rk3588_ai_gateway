@@ -1,5 +1,6 @@
 #include "rga_resize.h"
 
+#include <algorithm>
 #include <cstring>
 #include <fcntl.h>
 #include <iostream>
@@ -8,12 +9,12 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#if __has_include(<linux/dma-heap.h>)
-#include <linux/dma-heap.h>
-#define RK_HAS_DMA_HEAP_HEADER 1
-#else
-#define RK_HAS_DMA_HEAP_HEADER 0
-#endif
+// #if __has_include(<linux/dma-heap.h>)
+// #include <linux/dma-heap.h>
+// #define RK_HAS_DMA_HEAP_HEADER 1
+// #else
+// #define RK_HAS_DMA_HEAP_HEADER 0
+// #endif
 
 #include "im2d_version.h"
 #include "im2d_buffer.h"
@@ -24,14 +25,23 @@
 
 namespace {
 
-class Dma32RgaBuffer {
+/**
+ * \brief 使用普通内存的RGA缓冲区类，仅使用RGA3核心
+ */
+class RgaBuffer {
 public:
-    ~Dma32RgaBuffer() {
+    ~RgaBuffer() {
         release();
     }
 
-    bool ensure(size_t requested_size, const std::string& heap_path) {
-#if RK_HAS_DMA_HEAP_HEADER
+    /**
+     * \brief 确保分配指定大小的内存
+     * \param requested_size 请求的内存大小
+     * \return 成功返回true，失败返回false
+     * 
+     * 注意：此函数使用普通内存分配，仅适用于RGA3核心
+     */
+    bool ensure(size_t requested_size) {
         if (requested_size == 0) {
             return false;
         }
@@ -40,39 +50,20 @@ public:
         }
         release();
 
-        heap_fd_ = ::open(heap_path.c_str(), O_RDWR | O_CLOEXEC);
-        if (heap_fd_ < 0) {
-            return false;
-        }
-
-        dma_heap_allocation_data alloc_data{};
-        alloc_data.len = requested_size;
-        alloc_data.fd_flags = O_RDWR | O_CLOEXEC;
-        alloc_data.heap_flags = 0;
-        if (ioctl(heap_fd_, DMA_HEAP_IOCTL_ALLOC, &alloc_data) < 0) {
-            release();
-            return false;
-        }
-
-        buffer_fd_ = alloc_data.fd;
-        mapped_addr_ = mmap(nullptr, requested_size, PROT_READ | PROT_WRITE, MAP_SHARED, buffer_fd_, 0);
+        // 使用mmap分配内存，而不是DMA heap
+        mapped_addr_ = mmap(nullptr, requested_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (mapped_addr_ == MAP_FAILED) {
-            release();
             return false;
         }
 
         size_ = requested_size;
-        handle_ = importbuffer_fd(buffer_fd_, static_cast<int>(requested_size));
+        // 将分配的虚拟内存导入RGA驱动，使其能够被RGA硬件访问
+        handle_ = importbuffer_virtualaddr(mapped_addr_, static_cast<int>(requested_size));
         if (handle_ == 0) {
             release();
             return false;
         }
         return true;
-#else
-        (void)requested_size;
-        (void)heap_path;
-        return false;
-#endif
     }
 
     void release() {
@@ -84,14 +75,6 @@ public:
             munmap(mapped_addr_, size_);
             mapped_addr_ = MAP_FAILED;
         }
-        if (buffer_fd_ >= 0) {
-            ::close(buffer_fd_);
-            buffer_fd_ = -1;
-        }
-        if (heap_fd_ >= 0) {
-            ::close(heap_fd_);
-            heap_fd_ = -1;
-        }
         size_ = 0;
     }
 
@@ -99,21 +82,23 @@ public:
     rga_buffer_handle_t handle() const { return handle_; }
 
 private:
-    int heap_fd_ = -1;
-    int buffer_fd_ = -1;
     void* mapped_addr_ = MAP_FAILED;
     size_t size_ = 0;
     rga_buffer_handle_t handle_ = 0;
 };
 
 struct RgaRuntimeCache {
-    Dma32RgaBuffer src_dma;
-    Dma32RgaBuffer dst_dma;
+    RgaBuffer src_buffer;
+    RgaBuffer dst_buffer;
 };
 
 RgaRuntimeCache& cacheForContext(RgaResizeContext* context) {
-    static std::unordered_map<RgaResizeContext*, RgaRuntimeCache> caches;
+    thread_local std::unordered_map<RgaResizeContext*, RgaRuntimeCache> caches;
     return caches[context];
+}
+
+int alignUp(int value, int alignment) {
+    return ((value + alignment - 1) / alignment) * alignment;
 }
 
 } // namespace
@@ -189,35 +174,60 @@ bool tryResizeTo640x480WithRga(cv::Mat& bgr_frame,
     RgaRuntimeCache& runtime_cache = cacheForContext(&context);
     IM_STATUS rga_status = IM_STATUS_FAILED;
 
-    const int src_wstride = static_cast<int>((bgr_frame.step + 2) / 3);
-    const size_t src_bytes = static_cast<size_t>(src_wstride) * static_cast<size_t>(bgr_frame.rows) * 3;
-    const size_t dst_bytes = static_cast<size_t>(640) * static_cast<size_t>(480) * 3;
+    const int src_wstride = std::max(bgr_frame.cols, alignUp(static_cast<int>((bgr_frame.step + 2) / 3), 16));
+    const int dst_wstride = alignUp(640, 16);
+     // 根据官方示例，使用实际的stride值
+     const int actual_src_stride = bgr_frame.cols * 3;  // 每个像素3字节(BGR)
+     const int actual_dst_stride = 640 * 3;             // 每个像素3字节(BGR)
+     const size_t src_bytes = static_cast<size_t>(actual_src_stride) * static_cast<size_t>(bgr_frame.rows);
+     const size_t dst_bytes = static_cast<size_t>(actual_dst_stride) * static_cast<size_t>(480);
 
-    bool src_ok = runtime_cache.src_dma.ensure(src_bytes, dma_heap_path);
-    bool dst_ok = runtime_cache.dst_dma.ensure(dst_bytes, dma_heap_path);
+     // 为RGA可能的内部对齐需求预留额外空间
+     const size_t src_padding = 4096; // 预留4KB对齐空间
+     const size_t dst_padding = 4096; // 预留4KB对齐空间
+     const size_t aligned_src_bytes = src_bytes + src_padding;
+     const size_t aligned_dst_bytes = dst_bytes + dst_padding;
+
+     bool src_ok = runtime_cache.src_buffer.ensure(aligned_src_bytes);
+     bool dst_ok = runtime_cache.dst_buffer.ensure(aligned_dst_bytes);
     if (src_ok && dst_ok) {
-        unsigned char* src_ptr = reinterpret_cast<unsigned char*>(runtime_cache.src_dma.addr());
+        unsigned char* src_ptr = reinterpret_cast<unsigned char*>(runtime_cache.src_buffer.addr());
+        std::memset(src_ptr, 0, src_bytes);
         for (int y = 0; y < bgr_frame.rows; ++y) {
             std::memcpy(src_ptr + static_cast<size_t>(y) * static_cast<size_t>(src_wstride) * 3,
                         bgr_frame.ptr(y),
                         static_cast<size_t>(bgr_frame.cols) * 3);
         }
 
-        rga_buffer_t src_img = wrapbuffer_handle(runtime_cache.src_dma.handle(),
+        rga_buffer_t src_img = wrapbuffer_handle(runtime_cache.src_buffer.handle(),
                                                  bgr_frame.cols,
                                                  bgr_frame.rows,
                                                  RK_FORMAT_BGR_888,
                                                  src_wstride,
                                                  bgr_frame.rows);
-        rga_buffer_t dst_img = wrapbuffer_handle(runtime_cache.dst_dma.handle(),
+        rga_buffer_t dst_img = wrapbuffer_handle(runtime_cache.dst_buffer.handle(),
                                                  640,
                                                  480,
                                                  RK_FORMAT_BGR_888,
-                                                 640,
+                                                 dst_wstride,
                                                  480);
+
+        im_rect src_rect = {0, 0, bgr_frame.cols, bgr_frame.rows};
+        im_rect dst_rect = {0, 0, 640, 480};
+        IM_STATUS check_ret = imcheck(src_img, dst_img, src_rect, dst_rect);
+        if (check_ret != IM_STATUS_NOERROR && check_ret != IM_STATUS_SUCCESS) {
+            std::cerr << "[RGA] resize 参数预检失败: " << imStrError(check_ret)
+                      << " src=" << bgr_frame.cols << "x" << bgr_frame.rows
+                      << " src_wstride=" << src_wstride
+                      << " dst_wstride=" << dst_wstride
+                      << std::endl;
+            context.rga_resize_fused_off = true;
+            return false;
+        }
+
         rga_status = imresize(src_img, dst_img);
         if (rga_status == IM_STATUS_SUCCESS) {
-            cv::Mat resized_dma(480, 640, CV_8UC3, runtime_cache.dst_dma.addr(), 640 * 3);
+            cv::Mat resized_dma(480, 640, CV_8UC3, runtime_cache.dst_buffer.addr(), dst_wstride * 3);
             bgr_frame = resized_dma;
             return true;
         }

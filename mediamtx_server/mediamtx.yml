@@ -20,12 +20,12 @@ sysLogPrefix: mediamtx
 dumpPackets: false
 
 # Timeout of read operations.
-readTimeout: 10s
+readTimeout: 30s
 # Timeout of write operations.
-writeTimeout: 10s
+writeTimeout: 30s
 # Size of the queue of outgoing packets.
 # A higher value allows to increase throughput, a lower value allows to save RAM.
-writeQueueSize: 512
+writeQueueSize: 1024
 # Maximum size of outgoing UDP payloads.
 # It defaults to the maximum packet size on ethernet (1500) minus IPv6 and UDP headers (48).
 # This can be decreased to avoid fragmentation on networks with a low MTU.
@@ -800,6 +800,20 @@ paths:
   # example:
   # my_camera:
   #   source: rtsp://my_camera
+
+  # Host camera streams for testing
+  host_cam:
+    source: publisher
+  host_cam2:
+    source: publisher
+  host_cam3:
+    source: publisher
+  
+  # Gateway output stream
+  gateway_out:
+    source: publisher
+    # Allow overriding the publisher to prevent conflicts
+    overridePublisher: true
 
   # Settings under path "all_others" are applied to all paths that
   # do not match another entry.

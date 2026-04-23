@@ -15,8 +15,8 @@ private:
     size_t max_size_;
 
 public:
-    // 默认最大缓存5帧，防止处理过慢导致 OOM (内存溢出) 和 极大的视频延迟
-    explicit ThreadSafeQueue(size_t max_size = 5) : max_size_(max_size) {}
+     // 默认最大缓存10帧，平衡内存使用和流畅性，防止处理过慢导致 OOM (内存溢出) 和 极大的视频延迟
+     explicit ThreadSafeQueue(size_t max_size = 10) : max_size_(max_size) {}
 
     void push(T value) {
         std::lock_guard<std::mutex> lock(mutex_);

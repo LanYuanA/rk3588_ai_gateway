@@ -20,6 +20,8 @@
 #include "app_context.h"
 #include "rga_resize.h"
 #include "rga_yuv_converter.h"
+#include "rtsp_mpp_decoder.h"
+#include "time_manager.h"
 
 namespace {
 
@@ -317,21 +319,33 @@ void streamPullerAndDecoderThread(int streamId, const std::string& stream_url) {
     std::uniform_int_distribution<int> jitter_dist(0, 200);
 
     V4L2Capture v4l2_cap;
+    RtspMppDecoder rtsp_decoder;
     cv::VideoCapture cap;
+    bool use_rtsp_mpp = false;
     if (is_v4l2_stream) {
         if (!v4l2_cap.open(stream_url, 640, 480)) {
             std::cerr << "[错误] V4L2 打开摄像头失败: " << stream_url << std::endl;
             return;
         }
-        // 初始化V4L2捕获器的RGA YUV转换器上下文
-        initializeRgaYuvConverterContext(streamId,
-                                       true,  // use_rga_conversion
-                                       use_dma32_for_rga,
-                                       rga_scheduler_mode,
-                                       v4l2_cap.getYuvConverterContext());
+         // 初始化V4L2捕获器的RGA YUV转换器上下文，只使用RGA3核心
+         int rga3_only_mode = 0; // 强制使用RGA3_CORE0
+         initializeRgaYuvConverterContext(streamId,
+                                        true,  // use_rga_conversion
+                                        use_dma32_for_rga,
+                                        rga3_only_mode,
+                                        v4l2_cap.getYuvConverterContext());
     } else if (stream_url.find("rtsp://") != std::string::npos) {
-        setenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stimeout;2000000|flags;low_delay|video_codec;h264", 1);
-        cap.open(stream_url, cv::CAP_FFMPEG);
+        if (rtsp_decoder.open(stream_url)) {
+            use_rtsp_mpp = true;
+        } else {
+            std::cerr << "[警告] RTSP MPP 打开失败，回退 FFmpeg 软解: " << stream_url << std::endl;
+            setenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stimeout;2000000|flags;low_delay|video_codec;h264", 1);
+            cap.open(stream_url, cv::CAP_FFMPEG);
+            if (!cap.isOpened()) {
+                std::cerr << "[错误] RTSP 软解也打开失败: " << stream_url << std::endl;
+                return;
+            }
+        }
     } else {
         std::string local_file_uri = "file://" + getProjectRootDir() + "/" + stream_url;
         std::string gst_pipeline = "uridecodebin uri=" + local_file_uri + " ! videoconvert ! appsink sync=false max-buffers=5";
@@ -342,28 +356,65 @@ void streamPullerAndDecoderThread(int streamId, const std::string& stream_url) {
         }
     }
 
-    if (!is_v4l2_stream && !cap.isOpened()) {
-        std::cerr << "[错误] 无法打开媒体源 " << streamId << ": " << stream_url << std::endl;
-        return;
+    if (!is_v4l2_stream) {
+        if (!is_rtsp_stream && !cap.isOpened()) {
+            std::cerr << "[错误] 无法打开媒体源 " << streamId << ": " << stream_url << std::endl;
+            return;
+        }
     }
 
     uint64_t frame_seq = 0;
     cv::Mat bgr_frame;
+    cv::Mat nv12_frame;
     auto last_read_time = std::chrono::steady_clock::now();
     RgaResizeContext rga_context;
+    int rga3_only_mode = 0; // 强制使用RGA3_CORE0
     initializeRgaResizeContext(streamId,
                                use_rga_resize,
                                use_dma32_for_rga,
-                               rga_scheduler_mode,
+                               rga3_only_mode,
                                rga_context);
+    RgaYuvConverterContext rtsp_rga_yuv_context;
+    if (is_rtsp_stream) {
+        int rga3_only_mode = 0; // 强制使用RGA3_CORE0
+        initializeRgaYuvConverterContext(streamId,
+                                       true,
+                                       use_dma32_for_rga,
+                                       rga3_only_mode,
+                                       rtsp_rga_yuv_context);
+    }
+     while (g_system_running) {
+         bool ret = false;
+         if (is_v4l2_stream) {
+             ret = v4l2_cap.read(bgr_frame);
+         } else if (is_rtsp_stream) {
+             cv::Mat nv12_frame;
+             if (use_rtsp_mpp) {
+                 int64_t dummy_timestamp;
+                 ret = rtsp_decoder.read(nv12_frame, dummy_timestamp);
+                 if (ret && !nv12_frame.empty()) {
+                      // NV12格式：Y分量占前H行，UV分量交错排列占后H/2行
+                      // 因此总行数是H + H/2 = 3H/2，所以原始高度是rows * 2 / 3
+                      int raw_height = nv12_frame.rows * 2 / 3;  // 实际Y分量的高度
+                      bool converted_by_rga = convertYuv420ToBgrWithRga(
+                          nv12_frame.data,
+                          nv12_frame.cols,
+                          raw_height,
+                          bgr_frame,
+                          dma_heap_path,
+                          rtsp_rga_yuv_context);
 
-    while (g_system_running) {
-        bool ret = false;
-        if (is_v4l2_stream) {
-            ret = v4l2_cap.read(bgr_frame);
-        } else {
-            ret = cap.read(bgr_frame);
-        }
+                     if (!converted_by_rga) {
+                         cv::Mat nv12_view(raw_height * 3 / 2, nv12_frame.cols, CV_8UC1, nv12_frame.data);
+                         cv::cvtColor(nv12_view, bgr_frame, cv::COLOR_YUV2BGR_NV12);
+                     }
+                 }
+             } else {
+                 ret = cap.read(bgr_frame);
+             }
+         } else {
+             ret = cap.read(bgr_frame);
+         }
         if (!ret || bgr_frame.empty()) {
             int wait_ms = reconnect_backoff_ms + jitter_dist(rng);
             std::cerr << "[警告] 流 " << streamId << " 读取失败，" << wait_ms
@@ -380,13 +431,32 @@ void streamPullerAndDecoderThread(int streamId, const std::string& stream_url) {
                 continue;
             }
             if (is_rtsp_stream) {
-                cap.release();
                 std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
-                cap.open(stream_url, cv::CAP_FFMPEG);
-                if (cap.isOpened()) {
-                    reconnect_backoff_ms = 500;
+
+                if (use_rtsp_mpp) {
+                    rtsp_decoder.close();
+                    if (rtsp_decoder.open(stream_url)) {
+                        reconnect_backoff_ms = 500;
+                    } else {
+                        // MPP 失效后自动降级到软解，避免整路中断。
+                        use_rtsp_mpp = false;
+                        setenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stimeout;2000000|flags;low_delay|video_codec;h264", 1);
+                        cap.open(stream_url, cv::CAP_FFMPEG);
+                        if (cap.isOpened()) {
+                            std::cerr << "[警告] RTSP MPP 重连失败，已切换 FFmpeg 软解: " << stream_url << std::endl;
+                            reconnect_backoff_ms = 500;
+                        } else {
+                            reconnect_backoff_ms = std::min(reconnect_backoff_ms * 2, reconnect_backoff_max_ms);
+                        }
+                    }
                 } else {
-                    reconnect_backoff_ms = std::min(reconnect_backoff_ms * 2, reconnect_backoff_max_ms);
+                    cap.release();
+                    cap.open(stream_url, cv::CAP_FFMPEG);
+                    if (cap.isOpened()) {
+                        reconnect_backoff_ms = 500;
+                    } else {
+                        reconnect_backoff_ms = std::min(reconnect_backoff_ms * 2, reconnect_backoff_max_ms);
+                    }
                 }
             } else {
                 cap.set(cv::CAP_PROP_POS_FRAMES, 0);
@@ -397,8 +467,8 @@ void streamPullerAndDecoderThread(int streamId, const std::string& stream_url) {
 
         reconnect_backoff_ms = 500;
 
-        auto now = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_read_time).count();
+        auto steady_now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(steady_now - last_read_time).count();
 
         bool is_live_stream = (is_rtsp_stream || is_v4l2_stream);
         if (!is_live_stream && elapsed < 32) {
@@ -413,10 +483,12 @@ void streamPullerAndDecoderThread(int streamId, const std::string& stream_url) {
             }
         }
 
-        VideoFrame frame;
-        frame.stream_id = streamId;
-        frame.frame_id = frame_seq++;
-        frame.image = bgr_frame.clone();
+         VideoFrame frame;
+         frame.stream_id = streamId;
+         frame.frame_id = frame_seq++;
+         // 移除时间戳获取以提高性能，只在拼接线程中添加时间显示
+         frame.timestamp_ms = 0;  // 设置为0表示不使用时间戳同步
+         frame.image = bgr_frame.clone();
 
         g_inference_queues[streamId].push(frame);
         g_push_queues[streamId].push(frame);
@@ -424,6 +496,12 @@ void streamPullerAndDecoderThread(int streamId, const std::string& stream_url) {
 
     if (is_v4l2_stream) {
         v4l2_cap.close();
+    } else if (is_rtsp_stream) {
+        if (use_rtsp_mpp) {
+            rtsp_decoder.close();
+        } else {
+            cap.release();
+        }
     } else {
         cap.release();
     }

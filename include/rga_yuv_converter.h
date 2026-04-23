@@ -1,18 +1,19 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
-// Forward declaration to avoid including opencv headers in header
+// 包含OpenCV头文件以正确处理cv::Mat类型
+#ifdef __cplusplus
+#include <opencv2/opencv.hpp>
+#endif
+
 struct RgaYuvConverterContext {
     bool use_rga_conversion = true;
     bool conversion_fused_off = false;
     bool current_use_dma32 = true;
+    uint64_t scheduler_core = 0;
 };
-
-// Forward declaration of cv::Mat to avoid including opencv headers in header
-namespace cv {
-    class Mat;
-}
 
 /**
  * 初始化RGA YUV转换器上下文
@@ -46,19 +47,19 @@ bool tryConvertYuvToBgrWithRga(void* src_buffer,
  * 使用RGA进行YUV422到BGR888的转换
  */
 bool convertYuv422ToBgrWithRga(void* src_buffer,
-                               int width,
-                               int height,
-                               int bytes_per_line,
-                               cv::Mat& dst_bgr_frame,
-                               const std::string& dma_heap_path,
-                               RgaYuvConverterContext& context);
+                                int width,
+                                int height,
+                                int bytes_per_line,
+                                cv::Mat& dst_bgr_frame,
+                                const std::string& dma_heap_path,
+                                RgaYuvConverterContext& context);
 
 /**
  * 使用RGA进行YUV420到BGR888的转换
  */
 bool convertYuv420ToBgrWithRga(void* src_buffer,
-                               int width,
-                               int height,
-                               cv::Mat& dst_bgr_frame,
-                               const std::string& dma_heap_path,
-                               RgaYuvConverterContext& context);
+                                int width,
+                                int height,
+                                cv::Mat& dst_bgr_frame,
+                                const std::string& dma_heap_path,
+                                RgaYuvConverterContext& context);

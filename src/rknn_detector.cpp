@@ -170,8 +170,8 @@ std::vector<DetectResult> RKNNDetector::inference(cv::Mat& image) {
         return results;
     }
 
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-    std::cout << "[NPU 推理耗时] " << duration << " ms" << std::endl;
+     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+     // std::cout << "[NPU 推理耗时] " << duration << " ms" << std::endl;  // 注释掉推理耗时日志
 
     // =================== 4. 获取推理输出 ===================
     rknn_output outputs[io_num.n_output];
@@ -245,7 +245,7 @@ std::vector<DetectResult> RKNNDetector::inference(cv::Mat& image) {
             // 进行 Non-Maximum Suppression (NMS 防止人脸框重叠堆积)
             if (!results.empty()) {
                 nms(results, 0.45); // NMS IoU阈值 0.45 
-                std::cout << "[模型后处理] 在当前帧中检测到 " << results.size() << " 个人脸。" << std::endl;
+                // std::cout << "[模型后处理] 在当前帧中检测到 " << results.size() << " 个人脸。" << std::endl;  // 注释掉检测结果日志
             }
         } else {
              std::cout << "[警告] 发现多端输出层 (Output=" << io_num.n_output << ") 暂未实现合并，请提供 init属性日志分析。" << std::endl;
@@ -258,7 +258,8 @@ std::vector<DetectResult> RKNNDetector::inference(cv::Mat& image) {
     // 您之前写的 Python 之所以不报错，是因为 Python 调用底层 C++ 接口以及释放内存会有天然的 3~5ms 的 GIL 和封装延时
     // 而现在的 C++ 工业级框架，一旦一帧推理算完了释放 `outputs_release` 之后，不到 0.05 毫秒下一个循环立马就开始灌下个 `rknn_inputs_set`！
     // 老版本的 RK3588 NPU 驱动内部清理上一个 DMA 内存是异步的，速度跟不上 C++ 的疯狂连发，导致了指针践踏和驱动当机报 `failed to submit` 从而引发 5 秒钟超时惩罚。
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // 注释掉这个延时以改善流畅性，如果出现NPU错误再考虑启用
+    // std::this_thread::sleep_for(std::chrono::milliseconds(10));
     
     return results;
 }

@@ -1,6 +1,7 @@
 #include "streamer_thread.h"
 
 #include <chrono>
+#include <array>
 #include <iostream>
 #include <opencv2/opencv.hpp>
 #include <thread>
@@ -13,12 +14,10 @@ void streamerThread() {
     std::cout << "[推流线程] 启动，初始化 4 路融合 + GStreamer MPP 硬件编码..." << std::endl;
 
     std::string push_rtsp =
-        "appsrc is-live=true do-timestamp=true format=time block=false "
-        "! queue leaky=downstream max-size-buffers=2 "
-        "! video/x-raw,format=BGR,width=1280,height=960,framerate=30/1 "
+        "appsrc is-live=true block=false "
         "! videoconvert "
-        "! queue leaky=downstream max-size-buffers=2 "
-        "! mpph264enc bps=4000000 rc-mode=cbr gop=60 "
+        "! video/x-raw,format=NV12,width=1280,height=960,framerate=30/1 "
+        "! mpph264enc "
         "! h264parse config-interval=1 "
         "! rtspclientsink location=rtsp://127.0.0.1:8554/gateway_out protocols=tcp";
 
@@ -32,40 +31,50 @@ void streamerThread() {
         }
     }
 
-    std::vector<cv::Mat> canvas(NUM_STREAMS, cv::Mat::zeros(480, 640, CV_8UC3));
+    std::array<VideoFrame, NUM_STREAMS> latest_frames{};
     int frame_count = 0;
-    auto last_write_time = std::chrono::steady_clock::now();
 
     while (g_system_running) {
-        updateCanvasFromPushQueues(canvas);
+        updateCanvasFromPushQueues(latest_frames);
 
-        auto now = std::chrono::steady_clock::now();
-        auto ms_passed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_write_time).count();
-
-        if (ms_passed >= 33) {
-            if (writer.isOpened()) {
-                auto t1_merge = std::chrono::steady_clock::now();
-                cv::Mat final_grid = composeGridWithDetections(canvas);
-                auto t2_merge = std::chrono::steady_clock::now();
-                writer.write(final_grid);
-                auto t3_write = std::chrono::steady_clock::now();
-
-                frame_count++;
-                if (frame_count % 30 == 0) {
-                    int merge_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t2_merge - t1_merge).count();
-                    int write_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t3_write - t2_merge).count();
-                    std::cout << "[四路流-推流线程] 已同步推送第 " << frame_count
-                              << " 帧。 前期拼图耗时: " << merge_ms
-                              << " ms，GStreamer编码写入耗时: " << write_ms << " ms" << std::endl;
-                }
+        bool has_valid_frame = false;
+        for (const auto& frame : latest_frames) {
+            if (!frame.image.empty()) {
+                has_valid_frame = true;
+                break;
             }
+        }
 
-            last_write_time += std::chrono::milliseconds(33);
-            if (std::chrono::steady_clock::now() - last_write_time > std::chrono::milliseconds(100)) {
-                last_write_time = std::chrono::steady_clock::now();
+        if (!has_valid_frame) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+
+        if (writer.isOpened()) {
+            auto t1_merge = std::chrono::steady_clock::now();
+            cv::Mat final_grid = composeGridWithDetections(latest_frames, 0); // 移除时间戳参数
+            auto t2_merge = std::chrono::steady_clock::now();
+            writer.write(final_grid);
+            auto t3_write = std::chrono::steady_clock::now();
+
+            frame_count++;
+            if (frame_count % 30 == 0) {
+                int merge_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t2_merge - t1_merge).count();
+                int write_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t3_write - t2_merge).count();
+                std::cout << "[四路流-推流线程] 已推送第 " << frame_count
+                          << " 帧。 拼图耗时: " << merge_ms
+                          << " ms，写入耗时: " << write_ms << " ms" << std::endl;
+            }
+            
+            // 使用更灵活的延迟机制，基于实际处理时间来控制帧率
+            auto sleep_start = std::chrono::steady_clock::now();
+            auto sleep_duration = std::chrono::milliseconds(33) - (std::chrono::steady_clock::now() - t3_write);
+            if (sleep_duration.count() > 0) {
+                std::this_thread::sleep_for(sleep_duration);
             }
         } else {
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            // 如果writer未打开，仍然保持一定的延迟
+            std::this_thread::sleep_for(std::chrono::milliseconds(33));
         }
     }
 

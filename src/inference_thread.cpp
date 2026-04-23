@@ -43,17 +43,18 @@ void inferenceThread(const std::string& model_path,
             if (g_inference_queues[current_stream_id].pop(frame)) {
                 std::vector<DetectResult> results = detector.inference(frame.image);
 
-                {
-                    std::lock_guard<std::mutex> lock(g_results_mutex[current_stream_id]);
-                    g_latest_results[current_stream_id] = results;
-                }
+                 {
+                     std::lock_guard<std::mutex> lock(g_results_mutex[current_stream_id]);
+                     g_latest_results[current_stream_id] = results;
+                 }
             }
         }
 
-        idx = (idx + 1) % handled_streams.size();
-        if (idx == 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
+         idx = (idx + 1) % handled_streams.size();
+         if (idx == 0) {
+             // 减少延时以改善流畅性
+             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+         }
     }
 
     std::cout << "[推理线程 NPU " << npu_thread_id << "] 退出." << std::endl;
