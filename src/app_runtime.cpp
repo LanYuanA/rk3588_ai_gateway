@@ -52,6 +52,7 @@ namespace
 RuntimeOptions loadRuntimeOptions()
 {
     RuntimeOptions options;
+    // 读环境变量，后面是默认值
     options.pin_threads = envFlagEnabled("RK_PIN_THREADS", false);
     options.use_rga_resize = envFlagEnabled("RK_USE_RGA_RESIZE", true);
     options.use_dma32_for_rga = envFlagEnabled("RK_RGA_USE_DMA32", true);

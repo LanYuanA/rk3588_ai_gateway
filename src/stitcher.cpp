@@ -10,6 +10,7 @@
 
 #include "app_context.h"
 
+//获取最新帧，输入参数是一个数组(帧队列，视频流数)
 void updateCanvasFromPushQueues(std::array<VideoFrame, NUM_STREAMS>& latest_frames) {
     VideoFrame frame;
     for (int i = 0; i < NUM_STREAMS; ++i) {
@@ -25,9 +26,13 @@ void updateCanvasFromPushQueues(std::array<VideoFrame, NUM_STREAMS>& latest_fram
     }
 }
 
-cv::Mat composeGridWithDetections(const std::array<VideoFrame, NUM_STREAMS>& latest_frames,
-                                  int64_t unused_sync_reference) {
-    cv::Mat final_grid(960, 1280, CV_8UC3, cv::Scalar(0, 0, 0));
+//画四个框图，并且非阻塞的获取人脸检测的最终结果，并显示在框图中
+cv::Mat composeGridWithDetections(
+    const std::array<VideoFrame, NUM_STREAMS> &latest_frames,
+    int64_t unused_sync_reference) {
+  //640*480的框图需要四个，刚好是1280*960
+  cv::Mat final_grid(960, 1280, CV_8UC3, cv::Scalar(0, 0, 0));
+  //4个左上角的坐标+大小
     cv::Rect rois[4] = {
         cv::Rect(0, 0, 640, 480),
         cv::Rect(640, 0, 640, 480),

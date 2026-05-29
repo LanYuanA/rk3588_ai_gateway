@@ -24,6 +24,7 @@ void inferenceThread(const std::string& model_path,
     std::cout << "准备加载模型..." << std::endl;
 
     RKNNDetector detector;
+    //从model_path加载模型，并且给当前推理线程分配npu核
     if (!detector.init(model_path, npu_core_index)) {
         std::cerr << "[错误] NPU " << npu_thread_id << " 模型初始化失败。" << std::endl;
         return;
@@ -37,6 +38,7 @@ void inferenceThread(const std::string& model_path,
         if (g_inference_queues[current_stream_id].size() > 0) {
             while (g_inference_queues[current_stream_id].size() > 1) {
                 VideoFrame dummy;
+              //丢帧策略，如果queues有多帧，直接pop掉
                 g_inference_queues[current_stream_id].pop(dummy);
             }
 

@@ -115,6 +115,7 @@ public:
             return false;
         }
 
+        //申请摄像头的能力，看看有没有捕捉画面和流式传输的能力
         v4l2_capability cap_info{};
         if (ioctl(fd_, VIDIOC_QUERYCAP, &cap_info) < 0) {
             std::perror("[V4L2] VIDIOC_QUERYCAP");
@@ -135,20 +136,24 @@ public:
         fmt.fmt.pix.height = req_height;
         fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
         fmt.fmt.pix.field = V4L2_FIELD_ANY;
+
+        //申请摄像头输出这个format，并且把真正申请到的format给保存到fmt里
         if (ioctl(fd_, VIDIOC_S_FMT, &fmt) < 0) {
             std::perror("[V4L2] VIDIOC_S_FMT");
             close();
             return false;
         }
-
+        //获取真正申请到的format
         width_ = fmt.fmt.pix.width;
         height_ = fmt.fmt.pix.height;
         bytes_per_line_ = fmt.fmt.pix.bytesperline ? fmt.fmt.pix.bytesperline : width_ * 2;
+
 
         v4l2_requestbuffers req{};
         req.count = 4;
         req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         req.memory = V4L2_MEMORY_MMAP;
+        //申请缓存区
         if (ioctl(fd_, VIDIOC_REQBUFS, &req) < 0) {
             std::perror("[V4L2] VIDIOC_REQBUFS");
             close();
@@ -160,20 +165,20 @@ public:
             close();
             return false;
         }
-
+        //获得实际申请到的缓存区数量
         buffers_.resize(req.count);
         for (uint32_t i = 0; i < req.count; ++i) {
             v4l2_buffer buf{};
             buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
             buf.memory = V4L2_MEMORY_MMAP;
             buf.index = i;
-
+            //获取申请到的缓存区的地址和大小
             if (ioctl(fd_, VIDIOC_QUERYBUF, &buf) < 0) {
                 std::perror("[V4L2] VIDIOC_QUERYBUF");
                 close();
                 return false;
             }
-
+            //做mmap虚拟映射
             buffers_[i].length = buf.length;
             buffers_[i].start = mmap(nullptr, buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, buf.m.offset);
             if (buffers_[i].start == MAP_FAILED) {
@@ -181,7 +186,7 @@ public:
                 close();
                 return false;
             }
-
+            //把buffer交给内核，跟他说这个空闲，可以用
             if (ioctl(fd_, VIDIOC_QBUF, &buf) < 0) {
                 std::perror("[V4L2] VIDIOC_QBUF");
                 close();
@@ -213,7 +218,7 @@ public:
         timeval tv{};
         tv.tv_sec = 2;
         tv.tv_usec = 0;
-
+        //关注打开的fd，也就是摄像头设备，如果2s都没有输出，就绝对是有问题，直接退
         int ret = select(fd_ + 1, &fds, nullptr, nullptr, &tv);
         if (ret < 0) {
             if (errno == EINTR) {
@@ -227,6 +232,7 @@ public:
             return false;
         }
 
+        //一帧读取到了，就把buffer取出来
         v4l2_buffer buf{};
         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         buf.memory = V4L2_MEMORY_MMAP;
@@ -253,7 +259,7 @@ public:
             cv::Mat yuyv_frame(height_, width_, CV_8UC2, buffers_[buf.index].start, bytes_per_line_);
             cv::cvtColor(yuyv_frame, bgr_frame, cv::COLOR_YUV2BGR_YUYV);
         }
-
+        //重新交给内核
         if (ioctl(fd_, VIDIOC_QBUF, &buf) < 0) {
             std::perror("[V4L2] VIDIOC_QBUF(requeue)");
             return false;
@@ -262,6 +268,7 @@ public:
         return true;
     }
 
+    //把申请的缓冲区啥的都给解除映射，清除缓存区
     void close() {
         if (fd_ >= 0) {
             if (streaming_) {
@@ -328,14 +335,15 @@ void streamPullerAndDecoderThread(int streamId, const std::string& stream_url) {
             return;
         }
          // 初始化V4L2捕获器的RGA YUV转换器上下文，只使用RGA3核心
-         int rga3_only_mode = 0; // 强制使用RGA3_CORE0
+        int rga3_only_mode = 0; // 强制使用RGA3_CORE0
          initializeRgaYuvConverterContext(streamId,
                                         true,  // use_rga_conversion
                                         use_dma32_for_rga,
                                         rga3_only_mode,
                                         v4l2_cap.getYuvConverterContext());
     } else if (stream_url.find("rtsp://") != std::string::npos) {
-        if (rtsp_decoder.open(stream_url)) {
+      if (rtsp_decoder.open(stream_url)) {
+        //如果能用mpp硬件解码，就用
             use_rtsp_mpp = true;
         } else {
             std::cerr << "[警告] RTSP MPP 打开失败，回退 FFmpeg 软解: " << stream_url << std::endl;
@@ -410,11 +418,15 @@ void streamPullerAndDecoderThread(int streamId, const std::string& stream_url) {
                      }
                  }
              } else {
+               //不用mpp硬件加速，用gstreamer软解
                  ret = cap.read(bgr_frame);
              }
          } else {
+           //本地文件也是用oepncv标准库的VideoCapture类的read进行读取
              ret = cap.read(bgr_frame);
          }
+
+        //接下来这一块都是摄像头打开失败的处理措施了，都是close之后重新open，并且设置了重连间隔时间 
         if (!ret || bgr_frame.empty()) {
             int wait_ms = reconnect_backoff_ms + jitter_dist(rng);
             std::cerr << "[警告] 流 " << streamId << " 读取失败，" << wait_ms
@@ -467,6 +479,7 @@ void streamPullerAndDecoderThread(int streamId, const std::string& stream_url) {
 
         reconnect_backoff_ms = 500;
 
+        //读取成功后进行帧率控制，仅对本地文件生效，限制30fps，并且做缩放控制，缩放到640*480
         auto steady_now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(steady_now - last_read_time).count();
 

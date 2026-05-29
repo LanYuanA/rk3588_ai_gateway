@@ -16,6 +16,7 @@ endif()
 
 project(RK3588_AI_Gateway)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -36,7 +37,9 @@ if(CMAKE_SYSROOT)
 endif()
 
 find_package(Threads REQUIRED)
-find_package(OpenCV REQUIRED)
+if(NOT OpenCV_FOUND)
+    find_package(OpenCV REQUIRED)
+endif()
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0)
 find_library(RKNN_RUNTIME rknnrt)

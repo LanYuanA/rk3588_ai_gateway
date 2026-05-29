@@ -64,19 +64,20 @@ bool RtspMppDecoder::open(const std::string& rtsp_url) {
             }
             continue;
         }
-
+        //找到前面name为sink的参数，获取这些参数
         GstElement* app_sink_element = gst_bin_get_by_name(GST_BIN(pipeline), "sink");
         if (!app_sink_element) {
             std::cerr << "[RTSP-MPP] " << candidate.name << " 管线无法获取 appsink" << std::endl;
             gst_object_unref(pipeline);
             continue;
         }
-
-        GstAppSink* app_sink = GST_APP_SINK(app_sink_element);
-        gst_app_sink_set_emit_signals(app_sink, FALSE);
-        gst_base_sink_set_sync(GST_BASE_SINK(app_sink), FALSE);
-        gst_app_sink_set_drop(app_sink, TRUE);
-        gst_app_sink_set_max_buffers(app_sink, 1);
+        //把GstElement转换成GstAppSink
+        GstAppSink *app_sink = GST_APP_SINK(app_sink_element);
+        //这里下面这四个就是sink里面的那些参数，进行设置就行
+        gst_app_sink_set_emit_signals(app_sink, FALSE); //不发信号，用主动pull的方式取帧
+        gst_base_sink_set_sync(GST_BASE_SINK(app_sink), FALSE); //不同步时钟，尽快出帧
+        gst_app_sink_set_drop(app_sink, TRUE);//缓冲区满时丢弃旧帧
+        gst_app_sink_set_max_buffers(app_sink, 1); //只保留最新一帧，其他直接丢
 
         GstStateChangeReturn ret = gst_element_set_state(pipeline, GST_STATE_PLAYING);
         if (ret == GST_STATE_CHANGE_FAILURE) {
@@ -85,14 +86,16 @@ bool RtspMppDecoder::open(const std::string& rtsp_url) {
             gst_object_unref(pipeline);
             continue;
         }
-
-        GstBus* bus = gst_element_get_bus(pipeline);
+        //获取管道的消息总线
+        GstBus *bus = gst_element_get_bus(pipeline);
+        //等两秒，只关注报错或者警告信息，没有就正常返回NULL
         GstMessage* msg = gst_bus_timed_pop_filtered(
             bus,
             2 * GST_SECOND,
             static_cast<GstMessageType>(GST_MESSAGE_ERROR | GST_MESSAGE_WARNING));
 
         bool failed = false;
+        //说明有报错信息了
         if (msg != nullptr) {
             if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
                 GError* gst_error = nullptr;
@@ -136,14 +139,15 @@ bool RtspMppDecoder::read(cv::Mat& nv12_frame, int64_t& timestamp_ms) {
     if (!appsink_) {
         return false;
     }
-
+    //尝试拉一帧下来，能拉下来才能继续
     GstSample* sample = gst_app_sink_try_pull_sample(GST_APP_SINK(appsink_), 2 * GST_SECOND);
     if (!sample) {
         return false;
     }
-
+    //对拉下来的样本进行分析
     GstCaps* caps = gst_sample_get_caps(sample);
     if (caps != nullptr) {
+      //获取样本数据的宽高
         GstStructure* structure = gst_caps_get_structure(caps, 0);
         if (structure != nullptr) {
             int width = 0;
@@ -156,13 +160,13 @@ bool RtspMppDecoder::read(cv::Mat& nv12_frame, int64_t& timestamp_ms) {
             }
         }
     }
-
+    //获取样本数据
     GstBuffer* buffer = gst_sample_get_buffer(sample);
     if (!buffer || width_ <= 0 || height_ <= 0) {
         gst_sample_unref(sample);
         return false;
     }
-
+    //把buffer的内存进行映射，映射后的参数存在map_info里
     GstMapInfo map_info{};
     if (!gst_buffer_map(buffer, &map_info, GST_MAP_READ)) {
         gst_sample_unref(sample);
@@ -177,6 +181,7 @@ bool RtspMppDecoder::read(cv::Mat& nv12_frame, int64_t& timestamp_ms) {
     }
 
     nv12_frame.create(height_ * 3 / 2, width_, CV_8UC1);
+    //cpu进行数据搬运，把拉流下来的帧搬到nv12_frame
     std::memcpy(nv12_frame.data, map_info.data, expected_size);
 
     GstClockTime pts = GST_BUFFER_PTS(buffer);

@@ -87,7 +87,7 @@ bool RKNNDetector::init(const std::string& model_path, int npu_core_index) {
     is_init = true;
     return true;
 }
-
+    //NMS非极大值抑制算法
 void RKNNDetector::nms(std::vector<DetectResult>& input_boxes, float nms_thresh) {
     std::sort(input_boxes.begin(), input_boxes.end(), [](DetectResult a, DetectResult b) {
         return a.confidence > b.confidence;
