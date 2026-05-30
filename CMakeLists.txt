@@ -46,6 +46,7 @@ find_library(RKNN_RUNTIME rknnrt)
 
 include_directories(${CMAKE_SOURCE_DIR}/include ${OpenCV_INCLUDE_DIRS})
 include_directories(${GSTREAMER_INCLUDE_DIRS})
+include_directories(/usr/include/rockchip)
 
 set(SOURCES
     src/main.cpp
@@ -63,10 +64,31 @@ set(SOURCES
     src/rga_resize.cpp
     src/rga_yuv_converter.cpp
     src/npu_pool.cpp
+    src/mpp_encoder.cpp
+    src/mpp_decoder.cpp
+    src/realtime_composer.cpp
 )
 
 add_executable(${PROJECT_NAME} ${SOURCES})
 
-# 直接指定RGA库路径
-set(RGA_LIB "/usr/lib/aarch64-linux-gnu/librga.so.2")
-target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads ${OpenCV_LIBS} ${RKNN_RUNTIME} ${RGA_LIB} ${GSTREAMER_LIBRARIES})
+# 使用项目本地lib目录的库
+set(LIB_DIR ${CMAKE_SOURCE_DIR}/lib)
+
+# RGA库
+set(RGA_LIB "${LIB_DIR}/librga.so.2")
+
+# MPP库
+set(MPP_LIB "${LIB_DIR}/librockchip_mpp.so")
+
+# 设置RPATH，运行时查找本地lib目录
+set(CMAKE_INSTALL_RPATH "${LIB_DIR}")
+set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+
+target_link_libraries(${PROJECT_NAME} PRIVATE
+    Threads::Threads
+    ${OpenCV_LIBS}
+    ${RKNN_RUNTIME}
+    ${RGA_LIB}
+    ${MPP_LIB}
+    ${GSTREAMER_LIBRARIES}
+)

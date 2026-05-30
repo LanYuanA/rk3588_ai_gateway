@@ -18,6 +18,7 @@
 #include <linux/videodev2.h>
 
 #include "app_context.h"
+#include "realtime_composer.h"
 #include "rga_resize.h"
 #include "rga_yuv_converter.h"
 #include "rtsp_mpp_decoder.h"
@@ -503,8 +504,13 @@ void streamPullerAndDecoderThread(int streamId, const std::string& stream_url) {
          // 共享帧数据：推理和推流线程读同一块内存，不再 clone
          frame.image = std::make_shared<cv::Mat>(bgr_frame.clone());
 
+        // 推送到推理队列（异步处理）
         g_inference_queues[streamId].push(frame);
-        g_push_queues[streamId].push(frame);
+
+        // 直接更新实时合成器（非阻塞）
+        if (g_realtime_composer) {
+            g_realtime_composer->updateFrame(streamId, bgr_frame);
+        }
     }
 
     if (is_v4l2_stream) {

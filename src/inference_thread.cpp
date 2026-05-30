@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "app_context.h"
+#include "realtime_composer.h"
 #include "rknn_detector.h"
 
 // 保留原有的inferenceThread函数，但标记为废弃
@@ -72,6 +73,11 @@ void inferenceThread(const std::string& model_path,
             {
                 std::lock_guard<std::mutex> lock(g_results_mutex[current_stream_id]);
                 g_latest_results[current_stream_id] = results;
+            }
+
+            // 异步更新实时合成器的检测结果（非阻塞）
+            if (g_realtime_composer) {
+                g_realtime_composer->updateDetectionResults(current_stream_id, results);
             }
         }
 
