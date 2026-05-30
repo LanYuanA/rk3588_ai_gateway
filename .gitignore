@@ -27,7 +27,6 @@ compile_commands.json
 compile_flags.txt
 
 # ==================== 模型文件 (大二进制) ====================
-*.rknn
 *.onnx
 *.tflite
 *.caffemodel
