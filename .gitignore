@@ -1,0 +1,80 @@
+# ==================== 构建产物 ====================
+build/
+*.o
+*.o.d
+*.so
+*.so.*
+*.a
+*.dylib
+RK3588_AI_Gateway
+
+# ==================== CMake 生成文件 ====================
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+.toolchain_applied
+
+# ==================== IDE / 编辑器 ====================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cache/
+.ccls-cache/
+compile_flags.txt
+
+# ==================== 模型文件 (大二进制) ====================
+*.rknn
+*.onnx
+*.tflite
+*.caffemodel
+
+# ==================== 媒体文件 ====================
+*.mp4
+*.avi
+*.mkv
+*.h264
+*.h265
+*.ts
+*.flv
+debug_*.avi
+
+# ==================== MediaMTX ====================
+mediamtx_server/mediamtx
+mediamtx_server/mediamtx.yml.bak
+
+# ==================== 敏感信息 / API Keys ====================
+.env
+.env.*
+.env.local
+.env.production
+*.key
+*.pem
+*.p12
+*.crt
+*.csr
+secrets.*
+credentials.*
+*apikey*
+*api_key*
+*secret*
+config_local.*
+config_private.*
+
+# ==================== 日志 ====================
+*.log
+logs/
+
+# ==================== 系统文件 ====================
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+*.swp
+
+# ==================== RGA 测试资源 ====================
+rga.txt
+rga_samples/images/

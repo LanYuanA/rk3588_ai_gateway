@@ -6,18 +6,19 @@
 
 #include "app_runtime.h"
 
-struct WorkerThreads {
-    std::vector<std::thread> pullers;
+struct WorkerThreads
+{
+    std::vector<std::thread> pullers; // 线程数组
     std::thread infer1;
     std::thread infer2;
     std::thread streamer;
 };
 
-void startWorkerThreads(const std::vector<std::string>& stream_sources,
-                        const std::string& model_path,
-                        const RuntimeOptions& options,
-                        WorkerThreads& workers);
+void startWorkerThreads(const std::vector<std::string> &stream_sources,
+                        const std::string &model_path,
+                        const RuntimeOptions &options,
+                        WorkerThreads &workers);
 
 void requestShutdown();
 
-void joinWorkerThreads(WorkerThreads& workers);
+void joinWorkerThreads(WorkerThreads &workers);
