@@ -14,10 +14,20 @@ void streamerThread() {
     std::cout << "[推流线程] 启动，初始化 4 路融合 + GStreamer MPP 硬件编码..." << std::endl;
 
     std::string push_rtsp =
+    /*
         "appsrc is-live=true block=false "
         "! videoconvert "
         "! video/x-raw,format=NV12,width=1280,height=960,framerate=30/1 "
         "! mpph264enc "
+        "! h264parse config-interval=1 "
+        "! rtspclientsink location=rtsp://127.0.0.1:8554/gateway_out protocols=tcp";
+    */
+        "appsrc is-live=true do-timestamp=true format=time block=false "
+        "! queue leaky=downstream max-size-buffers=2 "
+        "! video/x-raw,format=BGR,width=1280,height=960,framerate=30/1 "
+        "! videoconvert "
+        "! queue leaky=downstream max-size-buffers=2 "
+        "! mpph264enc bps=6000000 rc-mode=cbr gop=60 "
         "! h264parse config-interval=1 "
         "! rtspclientsink location=rtsp://127.0.0.1:8554/gateway_out protocols=tcp";
 
