@@ -62,9 +62,11 @@ set(SOURCES
     src/stitcher.cpp
     src/rga_resize.cpp
     src/rga_yuv_converter.cpp
+    src/npu_pool.cpp
 )
 
 add_executable(${PROJECT_NAME} ${SOURCES})
 
-find_library(RGA_LIB rga PATHS /usr/lib/aarch64-linux-gnu /mnt/usr/lib/aarch64-linux-gnu)
+# 直接指定RGA库路径
+set(RGA_LIB "/usr/lib/aarch64-linux-gnu/librga.so.2")
 target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads ${OpenCV_LIBS} ${RKNN_RUNTIME} ${RGA_LIB} ${GSTREAMER_LIBRARIES})

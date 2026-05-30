@@ -8,6 +8,7 @@
 #include "ThreadSafeQueue.h"
 #include "common.h"
 #include "rknn_detector.h"
+#include "npu_pool.h"
 
 constexpr int NUM_STREAMS = 4;
 

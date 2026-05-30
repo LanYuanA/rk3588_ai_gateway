@@ -9,6 +9,8 @@
 #include "app_context.h"
 #include "rknn_detector.h"
 
+// 保留原有的inferenceThread函数，但标记为废弃
+// 新的实现使用npu_pool.cpp中的npuWorkerThread和inferenceDispatcherThread
 void inferenceThread(const std::string& model_path,
                      std::vector<int> handled_streams,
                      int npu_thread_id,

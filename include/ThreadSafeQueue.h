@@ -10,7 +10,7 @@ template <typename T>
 class ThreadSafeQueue {
 private:
     std::queue<T> queue_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::condition_variable cond_;
     size_t max_size_;
 
@@ -18,15 +18,38 @@ public:
      // 默认最大缓存10帧，平衡内存使用和流畅性，防止处理过慢导致 OOM (内存溢出) 和 极大的视频延迟
      explicit ThreadSafeQueue(size_t max_size = 10) : max_size_(max_size) {}
 
-    void push(T value) {
+     // 移动构造函数
+     ThreadSafeQueue(ThreadSafeQueue&& other) noexcept
+         : max_size_(other.max_size_) {
+         std::lock_guard<std::mutex> lock(other.mutex_);
+         queue_ = std::move(other.queue_);
+     }
+
+     // 移动赋值运算符
+     ThreadSafeQueue& operator=(ThreadSafeQueue&& other) noexcept {
+         if (this != &other) {
+             std::lock_guard<std::mutex> lock_other(other.mutex_);
+             std::lock_guard<std::mutex> lock_this(mutex_);
+             queue_ = std::move(other.queue_);
+             max_size_ = other.max_size_;
+         }
+         return *this;
+     }
+
+     // 禁止拷贝
+     ThreadSafeQueue(const ThreadSafeQueue&) = delete;
+     ThreadSafeQueue& operator=(const ThreadSafeQueue&) = delete;
+
+    bool push(T value) {
         std::lock_guard<std::mutex> lock(mutex_);
         // 核心逻辑：如果队列满了，丢弃最旧的帧（队头），保证最新帧优先被处理
         if (queue_.size() >= max_size_) {
-            queue_.pop(); 
+            queue_.pop();
         }
         queue_.push(std::move(value));
         // 通知挂起等待的消费线程
         cond_.notify_one();
+        return true;
     }
 
     // 阻塞式获取，如果系统退出则返回 false
