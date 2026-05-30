@@ -499,9 +499,9 @@ void streamPullerAndDecoderThread(int streamId, const std::string& stream_url) {
          VideoFrame frame;
          frame.stream_id = streamId;
          frame.frame_id = frame_seq++;
-         // 移除时间戳获取以提高性能，只在拼接线程中添加时间显示
-         frame.timestamp_ms = 0;  // 设置为0表示不使用时间戳同步
-         frame.image = bgr_frame.clone();
+         frame.timestamp_ms = 0;
+         // 共享帧数据：推理和推流线程读同一块内存，不再 clone
+         frame.image = std::make_shared<cv::Mat>(bgr_frame.clone());
 
         g_inference_queues[streamId].push(frame);
         g_push_queues[streamId].push(frame);

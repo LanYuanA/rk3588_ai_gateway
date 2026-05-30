@@ -1,7 +1,9 @@
 #include "stitcher.h"
 
 #include <array>
+#include <cstring>
 #include <mutex>
+#include <sys/mman.h>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -10,14 +12,32 @@
 
 #include "app_context.h"
 
+#include "im2d_version.h"
+#include "im2d_buffer.h"
+#include "im2d_common.h"
+#include "im2d_single.h"
+#include "im2d_type.h"
+#include "rga.h"
+
 //获取最新帧，输入参数是一个数组(帧队列，视频流数)
 void updateCanvasFromPushQueues(std::array<VideoFrame, NUM_STREAMS>& latest_frames) {
+    static int drop_log_counter = 0;
     VideoFrame frame;
     for (int i = 0; i < NUM_STREAMS; ++i) {
         // 清空队列中除了最新帧外的所有帧，确保获取到最新的视频帧
-        while (g_push_queues[i].size() > 1) {
-            VideoFrame dummy;
-            g_push_queues[i].pop(dummy);
+        size_t qsize = g_push_queues[i].size();
+        if (qsize > 1) {
+            int dropped = static_cast<int>(qsize) - 1;
+            while (g_push_queues[i].size() > 1) {
+                VideoFrame dummy;
+                g_push_queues[i].pop(dummy);
+            }
+            drop_log_counter += dropped;
+            if (drop_log_counter >= 30) {
+                std::cerr << "[丢帧] push_queues[" << i << "] 累计丢弃 "
+                          << drop_log_counter << " 帧（推流跟不上拉流）" << std::endl;
+                drop_log_counter = 0;
+            }
         }
         // 获取最新帧
         if (g_push_queues[i].size() > 0 && g_push_queues[i].pop(frame)) {
@@ -26,33 +46,52 @@ void updateCanvasFromPushQueues(std::array<VideoFrame, NUM_STREAMS>& latest_fram
     }
 }
 
+// ==================== 预分配 Grid + RGA buffer handle 导入 ====================
+
+struct GridPool {
+    cv::Mat grid;  // 预分配的 1280×960 BGR Grid（只分配一次，之后复用）
+    bool initialized = false;
+
+    void init() {
+        if (initialized) return;
+        grid = cv::Mat(960, 1280, CV_8UC3, cv::Scalar(0, 0, 0));
+        initialized = true;
+        std::cout << "[RGA-Grid] Grid 已预分配（复用模式）" << std::endl;
+    }
+};
+
+static GridPool& gridPool() {
+    static GridPool instance;
+    return instance;
+}
+
 //画四个框图，并且非阻塞的获取人脸检测的最终结果，并显示在框图中
 cv::Mat composeGridWithDetections(
     const std::array<VideoFrame, NUM_STREAMS> &latest_frames,
     int64_t unused_sync_reference) {
-  //640*480的框图需要四个，刚好是1280*960
-  cv::Mat final_grid(960, 1280, CV_8UC3, cv::Scalar(0, 0, 0));
-  //4个左上角的坐标+大小
-    cv::Rect rois[4] = {
-        cv::Rect(0, 0, 640, 480),
-        cv::Rect(640, 0, 640, 480),
-        cv::Rect(0, 480, 640, 480),
-        cv::Rect(640, 480, 640, 480)
-    };
+
+    GridPool& gp = gridPool();
+    gp.init();  // 首次调用时初始化（之后直接跳过）
+
+    // 清空 Grid（memset 3.6MB，比重新分配快）
+    std::memset(gp.grid.data, 0, gp.grid.total() * gp.grid.elemSize());
 
     for (int i = 0; i < NUM_STREAMS; ++i) {
-        if (!latest_frames[i].image.empty()) {
-            cv::Mat roi_mat = final_grid(rois[i]);
-            latest_frames[i].image.copyTo(roi_mat);
+        if (latest_frames[i].image && !latest_frames[i].image->empty()) {
+            const cv::Mat& cam = *latest_frames[i].image;
 
-            // 快速获取检测结果，不等待推理线程
+            // CPU copyTo（Grid 内存非连续，RGA imcopy 不支持普通堆内存）
+            cv::Mat roi_mat = gp.grid(cv::Rect(i % 2 == 0 ? 0 : 640,
+                                                i < 2 ? 0 : 480, 640, 480));
+            cam.copyTo(roi_mat);
+
+            // 获取检测结果（非阻塞）
             std::vector<DetectResult> current_res;
             if (g_results_mutex[i].try_lock()) {
                 current_res = g_latest_results[i];
                 g_results_mutex[i].unlock();
-            } // 如果无法立即获得锁，则使用空的current_res，即不显示检测框
+            }
 
-            // 显示简单的帧信息，不包含时间戳同步信息
             std::ostringstream info_text;
             info_text << "Stream: " << i;
             cv::putText(roi_mat,
@@ -80,17 +119,141 @@ cv::Mat composeGridWithDetections(
     // 在最终网格的右下角显示当前实时时间（精确到秒）
     auto now = std::chrono::system_clock::now();
     std::time_t now_time = std::chrono::system_clock::to_time_t(now);
-    
+
     std::stringstream ss;
     ss << std::put_time(std::localtime(&now_time), "%H:%M:%S");
 
-    cv::putText(final_grid,
+    cv::putText(gp.grid,
                 "Time: " + ss.str(),
-                cv::Point(final_grid.cols - 200, final_grid.rows - 20),
+                cv::Point(gp.grid.cols - 200, gp.grid.rows - 20),
                 cv::FONT_HERSHEY_SIMPLEX,
                 0.6,
                 cv::Scalar(0, 255, 255),
                 2);
 
-    return final_grid;
+    return gp.grid;
+}
+
+// ==================== RGA BGR → NV12 硬件转换 ====================
+
+namespace {
+
+struct GridRgaCache {
+    bool initialized = false;
+    bool fused_off = false;
+    uint64_t scheduler_core = IM_SCHEDULER_RGA3_CORE1;
+    void* dst_addr = nullptr;
+    size_t dst_size = 0;
+    rga_buffer_handle_t dst_handle = 0;
+
+    ~GridRgaCache() { release(); }
+
+    bool ensure(int width, int height) {
+        const size_t needed = static_cast<size_t>(width) * height * 3 / 2 + 4096;
+        if (initialized && dst_size >= needed) return true;
+        release();
+
+        dst_addr = mmap(nullptr, needed, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (dst_addr == MAP_FAILED) { dst_addr = nullptr; return false; }
+        dst_size = needed;
+
+        dst_handle = importbuffer_virtualaddr(dst_addr, static_cast<int>(needed));
+        if (dst_handle == 0) { release(); return false; }
+
+        initialized = true;
+        return true;
+    }
+
+    void release() {
+        if (dst_handle != 0) { releasebuffer_handle(dst_handle); dst_handle = 0; }
+        if (dst_addr && dst_addr != MAP_FAILED) { munmap(dst_addr, dst_size); dst_addr = nullptr; }
+        dst_size = 0;
+        initialized = false;
+    }
+};
+
+GridRgaCache& gridRgaCache() {
+    static GridRgaCache cache;
+    return cache;
+}
+
+} // namespace
+
+bool convertGridBgrToNv12WithRga(const cv::Mat& bgr_grid, cv::Mat& nv12_out) {
+    GridRgaCache& cache = gridRgaCache();
+    if (cache.fused_off) return false;
+
+    const int w = bgr_grid.cols;
+    const int h = bgr_grid.rows;
+
+    if (!cache.ensure(w, h)) {
+        cache.fused_off = true;
+        return false;
+    }
+
+    rga_buffer_t src_img = wrapbuffer_virtualaddr(bgr_grid.data, w, h, RK_FORMAT_BGR_888);
+    rga_buffer_t dst_img = wrapbuffer_handle(cache.dst_handle, w, h,
+                                              RK_FORMAT_YCbCr_420_SP, w, h);
+
+    im_rect rect = {0, 0, w, h};
+    IM_STATUS check_ret = imcheck(src_img, dst_img, rect, rect);
+    if (check_ret != IM_STATUS_NOERROR && check_ret != IM_STATUS_SUCCESS) {
+        cache.fused_off = true;
+        return false;
+    }
+
+    IM_STATUS ret = imcvtcolor(src_img, dst_img, RK_FORMAT_BGR_888, RK_FORMAT_YCbCr_420_SP);
+    if (ret == IM_STATUS_SUCCESS) {
+        const size_t nv12_bytes = static_cast<size_t>(w) * h * 3 / 2;
+        nv12_out.create(h * 3 / 2, w, CV_8UC1);
+        std::memcpy(nv12_out.data, cache.dst_addr, nv12_bytes);
+        return true;
+    }
+
+    cache.fused_off = true;
+    std::cerr << "[RGA-Grid] BGR→NV12 转换失败，熔断到 CPU。错误: "
+              << imStrError(ret) << std::endl;
+    return false;
+}
+
+bool convertGridBgrToNv12WithRga(const cv::Mat& bgr_grid, void* dst_buf, size_t dst_capacity) {
+    GridRgaCache& cache = gridRgaCache();
+    if (cache.fused_off) return false;
+
+    const int w = bgr_grid.cols;
+    const int h = bgr_grid.rows;
+    const size_t nv12_bytes = static_cast<size_t>(w) * h * 3 / 2;
+    if (dst_capacity < nv12_bytes) return false;
+
+    if (!cache.initialized) {
+        cache.scheduler_core = IM_SCHEDULER_RGA3_CORE1;
+        IM_STATUS cfg_ret = imconfig(IM_CONFIG_SCHEDULER_CORE, cache.scheduler_core);
+        if (cfg_ret != IM_STATUS_SUCCESS && cfg_ret != IM_STATUS_NOERROR) {
+            cache.fused_off = true;
+            return false;
+        }
+        cache.initialized = true;
+        std::cout << "[RGA-Grid] BGR→NV12 转换使用 RGA3_CORE1 (零拷贝模式)" << std::endl;
+    }
+
+    rga_buffer_t src_img = wrapbuffer_virtualaddr(bgr_grid.data, w, h, RK_FORMAT_BGR_888);
+    rga_buffer_t dst_img = wrapbuffer_virtualaddr(dst_buf, w, h, RK_FORMAT_YCbCr_420_SP);
+
+    im_rect rect = {0, 0, w, h};
+    IM_STATUS check_ret = imcheck(src_img, dst_img, rect, rect);
+    if (check_ret != IM_STATUS_NOERROR && check_ret != IM_STATUS_SUCCESS) {
+        cache.fused_off = true;
+        return false;
+    }
+
+    IM_STATUS ret = imcvtcolor(src_img, dst_img, RK_FORMAT_BGR_888, RK_FORMAT_YCbCr_420_SP);
+    if (ret == IM_STATUS_SUCCESS) {
+        return true;
+    }
+
+    cache.fused_off = true;
+    std::cerr << "[RGA-Grid] BGR→NV12 转换失败，熔断到 CPU。错误: "
+              << imStrError(ret) << std::endl;
+    return false;
 }

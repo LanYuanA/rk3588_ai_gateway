@@ -31,32 +31,52 @@ void inferenceThread(const std::string& model_path,
     }
 
     int idx = 0;
+    int empty_cycles = 0;
     while (g_system_running) {
         int current_stream_id = handled_streams[idx];
         VideoFrame frame;
 
-        if (g_inference_queues[current_stream_id].size() > 0) {
-            while (g_inference_queues[current_stream_id].size() > 1) {
-                VideoFrame dummy;
-              //丢帧策略，如果queues有多帧，直接pop掉
-                g_inference_queues[current_stream_id].pop(dummy);
+        // 跳过空队列，避免无意义的轮询
+        if (g_inference_queues[current_stream_id].size() == 0) {
+            idx = (idx + 1) % handled_streams.size();
+            if (idx == 0) {
+                empty_cycles++;
+                if (empty_cycles > 100) {
+                    // 所有队列持续为空，长睡避免空转
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    empty_cycles = 0;
+                } else {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
             }
+            continue;
+        }
+        empty_cycles = 0;
 
-            if (g_inference_queues[current_stream_id].pop(frame)) {
-                std::vector<DetectResult> results = detector.inference(frame.image);
+        // 丢弃旧帧，只保留最新
+        int dropped = 0;
+        while (g_inference_queues[current_stream_id].size() > 1) {
+            VideoFrame dummy;
+            g_inference_queues[current_stream_id].pop(dummy);
+            dropped++;
+        }
+        if (dropped > 0 && dropped % 30 == 0) {
+            std::cerr << "[推理丢帧] 流 " << current_stream_id
+                      << " 丢弃 " << dropped << " 帧" << std::endl;
+        }
 
-                 {
-                     std::lock_guard<std::mutex> lock(g_results_mutex[current_stream_id]);
-                     g_latest_results[current_stream_id] = results;
-                 }
+        if (g_inference_queues[current_stream_id].pop(frame)) {
+            std::vector<DetectResult> results = detector.inference(*frame.image);
+            {
+                std::lock_guard<std::mutex> lock(g_results_mutex[current_stream_id]);
+                g_latest_results[current_stream_id] = results;
             }
         }
 
-         idx = (idx + 1) % handled_streams.size();
-         if (idx == 0) {
-             // 减少延时以改善流畅性
-             std::this_thread::sleep_for(std::chrono::milliseconds(1));
-         }
+        idx = (idx + 1) % handled_streams.size();
+        if (idx == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
     }
 
     std::cout << "[推理线程 NPU " << npu_thread_id << "] 退出." << std::endl;
