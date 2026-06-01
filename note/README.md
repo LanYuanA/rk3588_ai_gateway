@@ -90,6 +90,7 @@
 |------|---------|---------|------|
 | 1 | [27_H265黑屏修复_VPS_SPS_PPS_FIX.md](27_H265黑屏修复_VPS_SPS_PPS_FIX.md) | 2026-05-30 | H265流VLC播放黑屏，缺少VPS/SPS/PPS头部数据 |
 | 2 | [28_检测框坐标映射修复_DETECTION_BOX_FIX.md](28_检测框坐标映射修复_DETECTION_BOX_FIX.md) | 2026-05-30 | 检测框不显示，坐标映射错误 |
+| 3 | [29_检测框显示修复_DETECTION_DISPLAY_FIX.md](29_检测框显示修复_DETECTION_DISPLAY_FIX.md) | 2026-05-30 | 检测框被覆盖，沿用推理结果 |
 
 ---
 

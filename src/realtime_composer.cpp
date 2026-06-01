@@ -41,6 +41,17 @@ void RealtimeComposer::updateFrame(int stream_id, const cv::Mat& frame) {
     cv::Mat roi = grid_(rois_[stream_id]);
     cv::resize(frame, roi, rois_[stream_id].size());
 
+    // 帧更新后，重新绘制该流的检测结果（防止检测框被覆盖）
+    // 先获取检测结果（不持有detection_mutex_太久）
+    std::vector<DetectResult> results;
+    {
+        std::lock_guard<std::mutex> det_lock(detection_mutexes_[stream_id]);
+        results = detections_[stream_id];
+    }
+    if (!results.empty()) {
+        drawDetections(grid_, stream_id, results);
+    }
+
     has_new_frame_[stream_id] = true;
 }
 

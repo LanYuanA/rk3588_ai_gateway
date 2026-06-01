@@ -10,6 +10,11 @@
 #include "realtime_composer.h"
 #include "rknn_detector.h"
 
+// 每路流的最近一次推理结果（用于沿用）
+static std::vector<DetectResult> g_last_inference_results[NUM_STREAMS];
+static std::mutex g_last_results_mutex[NUM_STREAMS];
+static int g_inference_frame_count[NUM_STREAMS] = {0};
+
 // 保留原有的inferenceThread函数，但标记为废弃
 // 新的实现使用npu_pool.cpp中的npuWorkerThread和inferenceDispatcherThread
 void inferenceThread(const std::string& model_path,
@@ -70,6 +75,15 @@ void inferenceThread(const std::string& model_path,
 
         if (g_inference_queues[current_stream_id].pop(frame)) {
             std::vector<DetectResult> results = detector.inference(*frame.image);
+            g_inference_frame_count[current_stream_id]++;
+
+            // 保存最近一次推理结果
+            {
+                std::lock_guard<std::mutex> lock(g_last_results_mutex[current_stream_id]);
+                g_last_inference_results[current_stream_id] = results;
+            }
+
+            // 更新全局结果
             {
                 std::lock_guard<std::mutex> lock(g_results_mutex[current_stream_id]);
                 g_latest_results[current_stream_id] = results;
@@ -78,6 +92,32 @@ void inferenceThread(const std::string& model_path,
             // 异步更新实时合成器的检测结果（非阻塞）
             if (g_realtime_composer) {
                 g_realtime_composer->updateDetectionResults(current_stream_id, results);
+            }
+
+            // DEBUG: 每30帧打印一次检测结果
+            if (g_inference_frame_count[current_stream_id] % 30 == 0) {
+                std::cout << "[推理DEBUG] 流" << current_stream_id
+                          << " 第" << g_inference_frame_count[current_stream_id] << "次推理"
+                          << " 检测到" << results.size() << "个目标";
+                for (size_t i = 0; i < results.size() && i < 3; i++) {
+                    std::cout << " [class:" << results[i].classId
+                              << " conf:" << results[i].confidence
+                              << " box:(" << results[i].box.x << "," << results[i].box.y
+                              << "," << results[i].box.width << "," << results[i].box.height << ")]";
+                }
+                std::cout << std::endl;
+            }
+        } else {
+            // 推理队列为空，沿用上次的推理结果
+            std::vector<DetectResult> last_results;
+            {
+                std::lock_guard<std::mutex> lock(g_last_results_mutex[current_stream_id]);
+                last_results = g_last_inference_results[current_stream_id];
+            }
+
+            // 如果有历史结果，更新到合成器
+            if (!last_results.empty() && g_realtime_composer) {
+                g_realtime_composer->updateDetectionResults(current_stream_id, last_results);
             }
         }
 
