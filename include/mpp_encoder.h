@@ -35,6 +35,8 @@ private:
     int fps_ = 30;
     int bitrate_ = 4000000;
     bool initialized_ = false;
+    bool got_extra_data_ = false;
+    std::vector<uint8_t> extra_data_;  // VPS/SPS/PPS头部数据
 
     MppH265Encoder(const MppH265Encoder&) = delete;
     MppH265Encoder& operator=(const MppH265Encoder&) = delete;

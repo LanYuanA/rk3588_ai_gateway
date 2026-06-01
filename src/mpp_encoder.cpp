@@ -139,13 +139,37 @@ bool MppH265Encoder::encode(const uint8_t* nv12_data, size_t data_size, std::vec
         return false;
     }
 
-    // 5. 复制编码数据
+    // 5. 首次编码后获取VPS/SPS/PPS头部数据
+    if (!got_extra_data_) {
+        MppPacket extra_pkt = nullptr;
+        ret = mpi->control(ctx, MPP_ENC_GET_EXTRA_INFO, &extra_pkt);
+        if (ret == MPP_OK && extra_pkt) {
+            void* extra_data = mpp_packet_get_data(extra_pkt);
+            size_t extra_size = mpp_packet_get_length(extra_pkt);
+            extra_data_.assign(static_cast<uint8_t*>(extra_data),
+                              static_cast<uint8_t*>(extra_data) + extra_size);
+            std::cout << "[MPP编码器] 获取VPS/SPS/PPS头部数据: " << extra_size << " 字节" << std::endl;
+        }
+        got_extra_data_ = true;
+    }
+
+    // 6. 复制编码数据（如果有头部数据，先添加）
     void* packet_data = mpp_packet_get_data(packet);
     size_t packet_size = mpp_packet_get_length(packet);
-    h265_data.assign(static_cast<uint8_t*>(packet_data),
-                     static_cast<uint8_t*>(packet_data) + packet_size);
 
-    // 6. 释放资源
+    if (!extra_data_.empty()) {
+        // 将VPS/SPS/PPS头部数据添加到编码数据前面
+        h265_data.reserve(extra_data_.size() + packet_size);
+        h265_data.insert(h265_data.end(), extra_data_.begin(), extra_data_.end());
+        h265_data.insert(h265_data.end(),
+                         static_cast<uint8_t*>(packet_data),
+                         static_cast<uint8_t*>(packet_data) + packet_size);
+    } else {
+        h265_data.assign(static_cast<uint8_t*>(packet_data),
+                         static_cast<uint8_t*>(packet_data) + packet_size);
+    }
+
+    // 7. 释放资源
     mpp_packet_deinit(&packet);
     mpp_frame_deinit(&frame);
 
