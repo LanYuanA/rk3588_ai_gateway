@@ -497,18 +497,6 @@ void streamPullerAndDecoderThread(int streamId, const std::string& stream_url) {
             }
         }
 
-        // DEBUG: 保存拉流端第一帧（每路流只保存一次）
-        {
-            static std::atomic<int> saved_count[NUM_STREAMS] = {};
-            if (saved_count[streamId].load() == 0) {
-                std::string filename = "debug_puller_stream" + std::to_string(streamId) + ".jpg";
-                cv::imwrite(filename, bgr_frame);
-                std::cout << "[DEBUG] 拉流端流" << streamId << " 保存第一帧: " << filename
-                          << " (" << bgr_frame.cols << "x" << bgr_frame.rows << ")" << std::endl;
-                saved_count[streamId].store(1);
-            }
-        }
-
          VideoFrame frame;
          frame.stream_id = streamId;
          frame.frame_id = frame_seq++;

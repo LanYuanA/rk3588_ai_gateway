@@ -4,6 +4,7 @@
 #include <iostream>
 
 #include "app_context.h"
+#include "realtime_composer.h"
 #include "rknn_detector.h"
 
 // 全局NPU任务队列（每个流独立队列）
@@ -61,6 +62,11 @@ void npuWorkerThread(const std::string& model_path,
                     {
                         std::lock_guard<std::mutex> lock(g_results_mutex[task.stream_id]);
                         g_latest_results[task.stream_id] = std::move(results);
+                    }
+
+                    // 更新实时合成器的检测结果
+                    if (g_realtime_composer) {
+                        g_realtime_composer->updateDetectionResults(task.stream_id, g_latest_results[task.stream_id]);
                     }
 
                     break;  // 处理完一个任务后重新开始轮询

@@ -290,7 +290,7 @@ void gstH265PushClose(GstH265PushContext& ctx) {
 } // namespace
 
 void streamerThread() {
-    std::cout << "[推流线程] 启动，初始化 4 路融合 + MPP H265 硬件编码..." << std::endl;
+    std::cout << "[推流线程] 启动，4路融合 + MPP H265 硬件编码 + RTSP推流" << std::endl;
 
     // 初始化实时合成器
     RealtimeComposer composer;
@@ -320,85 +320,47 @@ void streamerThread() {
         use_gst_direct = gstPushOpen(gst_ctx);
     }
 
-    // 备用方案：OpenCV VideoWriter（BGR + videoconvert）
-    cv::VideoWriter fallback_writer;
-    if (!use_mpp_encoder && !use_gst_direct) {
-        std::cerr << "[推流线程-警告] GStreamer NV12 直推失败，回退到 BGR + videoconvert" << std::endl;
-        std::string fallback_pipeline =
-            "appsrc is-live=true block=false "
-            "! videoconvert "
-            "! video/x-raw,format=NV12,width=1280,height=960,framerate=30/1 "
-            "! mpph264enc "
-            "! h264parse config-interval=1 "
-            "! rtspclientsink location=rtsp://127.0.0.1:8554/gateway_out protocols=tcp";
-        fallback_writer.open(fallback_pipeline, cv::CAP_GSTREAMER, 0, 30.0, cv::Size(1280, 960), true);
-        if (!fallback_writer.isOpened()) {
-            std::cerr << "[推流线程-警告] 无法启动任何录制，尝试本地 AVI" << std::endl;
-            fallback_writer.open("debug_4ch_output.avi", cv::VideoWriter::fourcc('M','J','P','G'),
-                                 15.0, cv::Size(1280, 960), true);
-        }
-    }
-
     int frame_count = 0;
-    bool rga_ok_last = false;
     auto last_frame_start = std::chrono::steady_clock::now();
-
-    std::cout << "[推流线程] 非阻塞模式启动，每33ms定时推送当前画面" << std::endl;
 
     while (g_system_running) {
         auto frame_start = std::chrono::steady_clock::now();
-        int interval_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            frame_start - last_frame_start).count();
-        last_frame_start = frame_start;
 
-        // 检测帧间隔抖动（>40ms 说明卡了）
-        if (frame_count > 0 && interval_ms > 40) {
-            std::cerr << "[卡顿检测] 帧间隔 " << interval_ms << "ms (期望≤33ms)" << std::endl;
-        }
-
-        // 非阻塞：直接从实时合成器获取当前画面
         cv::Mat final_grid = composer.getCurrentGrid();
-
-        // DEBUG: 保存推流端第一帧（只保存一次）
-        static bool saved_streamer_frame = false;
-        if (!saved_streamer_frame && !final_grid.empty()) {
-            cv::imwrite("debug_streamer_grid.jpg", final_grid);
-            std::cout << "[DEBUG] 推流端保存四宫格画面: debug_streamer_grid.jpg" << std::endl;
-            saved_streamer_frame = true;
+        if (final_grid.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
         }
 
-        auto t1_encode = std::chrono::steady_clock::now();
-
-        // 转换为NV12格式
-        cv::Mat nv12_frame;
-        rga_ok_last = convertGridBgrToNv12WithRga(final_grid, nv12_frame);
-        if (!rga_ok_last) {
-            // CPU回退：BGR→I420→NV12
-            cv::Mat i420;
-            cv::cvtColor(final_grid, i420, cv::COLOR_BGR2YUV_I420);
-            nv12_frame.create(960 * 3 / 2, 1280, CV_8UC1);
-            const int y_size = 1280 * 960;
-            const int uv_size = y_size / 4;
-            std::memcpy(nv12_frame.data, i420.data, y_size);
-            const uint8_t* u_plane = i420.data + y_size;
-            const uint8_t* v_plane = i420.data + y_size + uv_size;
-            uint8_t* uv_dst = nv12_frame.data + y_size;
-            for (int i = 0; i < uv_size; ++i) {
-                uv_dst[i * 2]     = u_plane[i];
-                uv_dst[i * 2 + 1] = v_plane[i];
-            }
-        }
-
-        auto t2_convert = std::chrono::steady_clock::now();
+        auto t1 = std::chrono::steady_clock::now();
 
         if (use_mpp_encoder && use_h265_gst) {
             // MPP H265编码 + GStreamer推流
+            cv::Mat nv12_frame;
+            convertGridBgrToNv12WithRga(final_grid, nv12_frame);
             std::vector<uint8_t> h265_data;
             if (mpp_encoder.encode(nv12_frame, h265_data)) {
                 gstH265PushFrame(h265_gst_ctx, h265_data);
             }
         } else if (use_gst_direct) {
             // GStreamer备用方案（H264）
+            cv::Mat nv12_frame;
+            convertGridBgrToNv12WithRga(final_grid, nv12_frame);
+            if (nv12_frame.empty()) {
+                cv::Mat i420;
+                cv::cvtColor(final_grid, i420, cv::COLOR_BGR2YUV_I420);
+                nv12_frame.create(960 * 3 / 2, 1280, CV_8UC1);
+                const int y_size = 1280 * 960;
+                const int uv_size = y_size / 4;
+                std::memcpy(nv12_frame.data, i420.data, y_size);
+                const uint8_t* u_plane = i420.data + y_size;
+                const uint8_t* v_plane = i420.data + y_size + uv_size;
+                uint8_t* uv_dst = nv12_frame.data + y_size;
+                for (int i = 0; i < uv_size; ++i) {
+                    uv_dst[i * 2] = u_plane[i];
+                    uv_dst[i * 2 + 1] = v_plane[i];
+                }
+            }
             std::memcpy(gst_ctx.pool.data, nv12_frame.data, nv12_frame.total() * nv12_frame.elemSize());
             GstClockTime duration = gst_util_uint64_scale(GST_SECOND, 1, 30);
             GST_BUFFER_PTS(gst_ctx.gst_buf) = gst_ctx.frame_count * duration;
@@ -407,26 +369,16 @@ void streamerThread() {
             gst_ctx.frame_count++;
             gst_app_src_push_buffer(GST_APP_SRC(gst_ctx.appsrc),
                                      gst_buffer_ref(gst_ctx.gst_buf));
-        } else if (fallback_writer.isOpened()) {
-            // 备用管道（BGR + videoconvert）
-            fallback_writer.write(final_grid);
         }
-
-        auto t3_write = std::chrono::steady_clock::now();
 
         frame_count++;
         if (frame_count % 30 == 0) {
-            int convert_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t2_convert - t1_encode).count();
-            int write_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t3_write - t2_convert).count();
-            std::string encoder_type = (use_mpp_encoder && use_h265_gst) ? "MPP H265" : (use_gst_direct ? "GStreamer H264" : "OpenCV BGR");
-            std::cout << "[四路流-推流线程] 已推送第 " << frame_count
-                      << " 帧。 NV12转换耗时: " << convert_ms
-                      << " ms，编码推流耗时: " << write_ms
-                      << " ms，RGA=" << (rga_ok_last ? "成功" : "回退CPU")
-                      << "，编码器=" << encoder_type << std::endl;
+            auto t2 = std::chrono::steady_clock::now();
+            int ms = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
+            std::string enc = (use_mpp_encoder && use_h265_gst) ? "MPP H265" : "GStreamer H264";
+            std::cout << "[推流] 第 " << frame_count << " 帧 编码耗时: " << ms << "ms 编码器=" << enc << std::endl;
         }
 
-        // 定时推送：每33ms推送一次，不等待任何队列
         auto next_frame_time = frame_start + std::chrono::milliseconds(33);
         auto now = std::chrono::steady_clock::now();
         if (next_frame_time > now) {
@@ -434,15 +386,12 @@ void streamerThread() {
         }
     }
 
-    // 释放资源
-    g_realtime_composer = nullptr;
     if (use_mpp_encoder && use_h265_gst) {
         gstH265PushClose(h265_gst_ctx);
         mpp_encoder.release();
     } else if (use_gst_direct) {
         gstPushClose(gst_ctx);
-    } else if (fallback_writer.isOpened()) {
-        fallback_writer.release();
     }
-    std::cout << "[推流线程] 退出并安全释放硬件写入句柄." << std::endl;
+    g_realtime_composer = nullptr;
+    std::cout << "[推流线程] 退出." << std::endl;
 }

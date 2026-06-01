@@ -58,12 +58,12 @@ public:
      * @brief 获取当前四宫格画面（零拷贝，需要外部加锁）
      * @return 画面引用
      */
-    const cv::Mat& getCurrentGridRef() const { return grid_; }
+    const cv::Mat& getCurrentGridRef() const { static cv::Mat empty; return empty; }
 
     /**
      * @brief 获取画面锁（用于零拷贝场景）
      */
-    std::mutex& getMutex() { return mutex_; }
+    std::mutex& getMutex() { return frame_mutex_; }
 
 private:
     /**
@@ -74,8 +74,10 @@ private:
      */
     void drawDetections(cv::Mat& grid, int stream_id, const std::vector<DetectResult>& results);
 
-    cv::Mat grid_;                          // 共享画面缓冲区
-    std::mutex mutex_;                      // 画面锁
+    // 每路原始视频帧（不绘制检测框，保证干净）
+    cv::Mat frames_[4];
+    std::mutex frame_mutex_;
+
     int grid_width_ = 1280;
     int grid_height_ = 960;
 
@@ -85,7 +87,4 @@ private:
     // 每路的检测结果（异步更新）
     std::vector<DetectResult> detections_[4];
     std::mutex detection_mutexes_[4];
-
-    // 每路是否有新帧
-    std::atomic<bool> has_new_frame_[4];
 };

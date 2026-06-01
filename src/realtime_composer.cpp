@@ -2,21 +2,13 @@
 
 #include <iostream>
 
-RealtimeComposer::RealtimeComposer() {
-    // 初始化atomic数组
-    for (int i = 0; i < 4; ++i) {
-        has_new_frame_[i].store(false);
-    }
-}
+RealtimeComposer::RealtimeComposer() = default;
 
 RealtimeComposer::~RealtimeComposer() = default;
 
 void RealtimeComposer::init(int grid_width, int grid_height) {
     grid_width_ = grid_width;
     grid_height_ = grid_height;
-
-    // 创建共享画面缓冲区
-    grid_ = cv::Mat(grid_height, grid_width, CV_8UC3, cv::Scalar(0, 0, 0));
 
     // 计算每路的ROI区域（四宫格布局）
     int cell_width = grid_width / 2;
@@ -27,6 +19,11 @@ void RealtimeComposer::init(int grid_width, int grid_height) {
     rois_[2] = cv::Rect(0, cell_height, cell_width, cell_height);          // 左下
     rois_[3] = cv::Rect(cell_width, cell_height, cell_width, cell_height); // 右下
 
+    // 初始化每路的帧缓冲区
+    for (int i = 0; i < 4; i++) {
+        frames_[i] = cv::Mat(cell_height, cell_width, CV_8UC3, cv::Scalar(0, 0, 0));
+    }
+
     std::cout << "[实时合成器] 初始化完成: " << grid_width << "x" << grid_height
               << ", 每路区域: " << cell_width << "x" << cell_height << std::endl;
 }
@@ -34,47 +31,49 @@ void RealtimeComposer::init(int grid_width, int grid_height) {
 void RealtimeComposer::updateFrame(int stream_id, const cv::Mat& frame) {
     if (stream_id < 0 || stream_id >= 4 || frame.empty()) return;
 
-    // 获取锁，更新对应区域
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    // 将帧缩放并复制到对应ROI区域
-    cv::Mat roi = grid_(rois_[stream_id]);
-    cv::resize(frame, roi, rois_[stream_id].size());
-
-    // 帧更新后，重新绘制该流的检测结果（防止检测框被覆盖）
-    // 先获取检测结果（不持有detection_mutex_太久）
-    std::vector<DetectResult> results;
-    {
-        std::lock_guard<std::mutex> det_lock(detection_mutexes_[stream_id]);
-        results = detections_[stream_id];
-    }
-    if (!results.empty()) {
-        drawDetections(grid_, stream_id, results);
-    }
-
-    has_new_frame_[stream_id] = true;
+    // 只更新原始帧缓冲区（不绘制检测框）
+    std::lock_guard<std::mutex> lock(frame_mutex_);
+    cv::resize(frame, frames_[stream_id], rois_[stream_id].size());
 }
 
 void RealtimeComposer::updateDetectionResults(int stream_id, const std::vector<DetectResult>& results) {
     if (stream_id < 0 || stream_id >= 4) return;
 
-    // 更新检测结果
+    // 保存检测结果
     {
         std::lock_guard<std::mutex> lock(detection_mutexes_[stream_id]);
         detections_[stream_id] = results;
     }
-
-    // 在画面上绘制检测结果
-    std::lock_guard<std::mutex> lock(mutex_);
-    drawDetections(grid_, stream_id, results);
 }
 
 cv::Mat RealtimeComposer::getCurrentGrid() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return grid_.clone();
+    // 一次性合成四宫格：读取原始帧 + 叠加检测框
+    cv::Mat grid(grid_height_, grid_width_, CV_8UC3, cv::Scalar(0, 0, 0));
+
+    std::lock_guard<std::mutex> frame_lock(frame_mutex_);
+
+    for (int i = 0; i < 4; i++) {
+        if (!frames_[i].empty()) {
+            // 先复制原始帧到grid
+            frames_[i].copyTo(grid(rois_[i]));
+
+            // 再叠加检测结果
+            std::vector<DetectResult> results;
+            {
+                std::lock_guard<std::mutex> det_lock(detection_mutexes_[i]);
+                results = detections_[i];
+            }
+            if (!results.empty()) {
+                drawDetections(grid, i, results);
+            }
+        }
+    }
+
+    return grid;
 }
 
 void RealtimeComposer::drawDetections(cv::Mat& grid, int stream_id, const std::vector<DetectResult>& results) {
+    // 获取当前路的帧尺寸作为参考
     cv::Mat roi = grid(rois_[stream_id]);
 
     // 原始图像尺寸（推理输入是640x480）
@@ -103,7 +102,7 @@ void RealtimeComposer::drawDetections(cv::Mat& grid, int stream_id, const std::v
                       cv::Scalar(0, 255, 0), 2);
 
         // 绘制标签
-        std::string label = "Face " + cv::format("%.2f", det.confidence);
+        std::string label = cv::format("Face %.2f", det.confidence);
         cv::putText(roi, label, cv::Point(x1, y1 - 5),
                     cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 2);
     }

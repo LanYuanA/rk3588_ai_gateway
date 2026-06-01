@@ -65,10 +65,10 @@ RuntimeOptions loadRuntimeOptions()
 std::vector<std::string> buildDefaultStreamSources()
 {
     return {
-        "/dev/video81",
         "rtsp://127.0.0.1:8554/host_cam",
         "rtsp://127.0.0.1:8554/host_cam2",
-        "rtsp://127.0.0.1:8554/host_cam3"};
+        "rtsp://127.0.0.1:8554/host_cam3",
+        "rtsp://127.0.0.1:8554/host_cam4"};
 }
 
 bool validateStreamSources(const std::vector<std::string> &stream_sources, int expected_streams)

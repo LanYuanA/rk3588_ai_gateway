@@ -22,17 +22,16 @@ int main()
     }
     std::cout << "[RKNN] 使用模型文件: " << model_path << std::endl;
 
-    const std::vector<std::string> stream_sources = buildDefaultStreamSources(); // 4个字符串，分别代表四个路径
-    if (!validateStreamSources(stream_sources, NUM_STREAMS))                     // 看是否已经配置四条路径了
+    const std::vector<std::string> stream_sources = buildDefaultStreamSources();
+    if (!validateStreamSources(stream_sources, NUM_STREAMS))
     {
         return 1;
     }
 
     const RuntimeOptions options = loadRuntimeOptions();
-    // 打印刚刚赋值给optinos里面的变量
     printRuntimeOptions(options);
 
-    WorkerThreads workers; // 创建线程盒，定义那些要用到的线程
+    WorkerThreads workers;
     startWorkerThreads(stream_sources, model_path, options, workers);
 
     std::cout << "所有子线程已启动，按 Enter 键安全退出系统...\n";
