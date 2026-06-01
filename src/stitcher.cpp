@@ -142,6 +142,13 @@ struct GridRgaCache {
     bool initialized = false;
     bool fused_off = false;
     uint64_t scheduler_core = IM_SCHEDULER_RGA3_CORE1;
+
+    // 源缓冲区（BGR，DMA内存）
+    void* src_addr = nullptr;
+    size_t src_size = 0;
+    rga_buffer_handle_t src_handle = 0;
+
+    // 目标缓冲区（NV12，DMA内存）
     void* dst_addr = nullptr;
     size_t dst_size = 0;
     rga_buffer_handle_t dst_handle = 0;
@@ -149,16 +156,28 @@ struct GridRgaCache {
     ~GridRgaCache() { release(); }
 
     bool ensure(int width, int height) {
-        const size_t needed = static_cast<size_t>(width) * height * 3 / 2 + 4096;
-        if (initialized && dst_size >= needed) return true;
+        const size_t bgr_bytes = static_cast<size_t>(width) * height * 3;
+        const size_t nv12_bytes = static_cast<size_t>(width) * height * 3 / 2;
+
+        if (initialized && src_size >= bgr_bytes && dst_size >= nv12_bytes) return true;
         release();
 
-        dst_addr = mmap(nullptr, needed, PROT_READ | PROT_WRITE,
+        // 分配源缓冲区（BGR DMA内存）
+        src_addr = mmap(nullptr, bgr_bytes + 4096, PROT_READ | PROT_WRITE,
                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (dst_addr == MAP_FAILED) { dst_addr = nullptr; return false; }
-        dst_size = needed;
+        if (src_addr == MAP_FAILED) { src_addr = nullptr; return false; }
+        src_size = bgr_bytes + 4096;
 
-        dst_handle = importbuffer_virtualaddr(dst_addr, static_cast<int>(needed));
+        src_handle = importbuffer_virtualaddr(src_addr, static_cast<int>(src_size));
+        if (src_handle == 0) { release(); return false; }
+
+        // 分配目标缓冲区（NV12 DMA内存）
+        dst_addr = mmap(nullptr, nv12_bytes + 4096, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (dst_addr == MAP_FAILED) { dst_addr = nullptr; release(); return false; }
+        dst_size = nv12_bytes + 4096;
+
+        dst_handle = importbuffer_virtualaddr(dst_addr, static_cast<int>(dst_size));
         if (dst_handle == 0) { release(); return false; }
 
         initialized = true;
@@ -166,9 +185,14 @@ struct GridRgaCache {
     }
 
     void release() {
+        if (src_handle != 0) { releasebuffer_handle(src_handle); src_handle = 0; }
+        if (src_addr && src_addr != MAP_FAILED) { munmap(src_addr, src_size); src_addr = nullptr; }
+        src_size = 0;
+
         if (dst_handle != 0) { releasebuffer_handle(dst_handle); dst_handle = 0; }
         if (dst_addr && dst_addr != MAP_FAILED) { munmap(dst_addr, dst_size); dst_addr = nullptr; }
         dst_size = 0;
+
         initialized = false;
     }
 };
@@ -192,13 +216,20 @@ bool convertGridBgrToNv12WithRga(const cv::Mat& bgr_grid, cv::Mat& nv12_out) {
         return false;
     }
 
-    rga_buffer_t src_img = wrapbuffer_virtualaddr(bgr_grid.data, w, h, RK_FORMAT_BGR_888);
+    // 将cv::Mat数据拷贝到DMA源缓冲区
+    const size_t bgr_bytes = static_cast<size_t>(w) * h * 3;
+    std::memcpy(cache.src_addr, bgr_grid.data, bgr_bytes);
+
+    // 源和目标都使用DMA handle
+    rga_buffer_t src_img = wrapbuffer_handle(cache.src_handle, w, h,
+                                              RK_FORMAT_BGR_888, w, h);
     rga_buffer_t dst_img = wrapbuffer_handle(cache.dst_handle, w, h,
                                               RK_FORMAT_YCbCr_420_SP, w, h);
 
     im_rect rect = {0, 0, w, h};
     IM_STATUS check_ret = imcheck(src_img, dst_img, rect, rect);
     if (check_ret != IM_STATUS_NOERROR && check_ret != IM_STATUS_SUCCESS) {
+        std::cerr << "[RGA-Grid] imcheck失败: " << imStrError(check_ret) << std::endl;
         cache.fused_off = true;
         return false;
     }
@@ -226,18 +257,18 @@ bool convertGridBgrToNv12WithRga(const cv::Mat& bgr_grid, void* dst_buf, size_t 
     const size_t nv12_bytes = static_cast<size_t>(w) * h * 3 / 2;
     if (dst_capacity < nv12_bytes) return false;
 
-    if (!cache.initialized) {
-        cache.scheduler_core = IM_SCHEDULER_RGA3_CORE1;
-        IM_STATUS cfg_ret = imconfig(IM_CONFIG_SCHEDULER_CORE, cache.scheduler_core);
-        if (cfg_ret != IM_STATUS_SUCCESS && cfg_ret != IM_STATUS_NOERROR) {
-            cache.fused_off = true;
-            return false;
-        }
-        cache.initialized = true;
-        std::cout << "[RGA-Grid] BGR→NV12 转换使用 RGA3_CORE1 (零拷贝模式)" << std::endl;
+    const size_t bgr_bytes = static_cast<size_t>(w) * h * 3;
+    if (!cache.ensure(w, h)) {
+        cache.fused_off = true;
+        return false;
     }
 
-    rga_buffer_t src_img = wrapbuffer_virtualaddr(bgr_grid.data, w, h, RK_FORMAT_BGR_888);
+    // 将cv::Mat数据拷贝到DMA源缓冲区
+    std::memcpy(cache.src_addr, bgr_grid.data, bgr_bytes);
+
+    // 源使用DMA handle，目标使用用户传入的虚拟地址
+    rga_buffer_t src_img = wrapbuffer_handle(cache.src_handle, w, h,
+                                              RK_FORMAT_BGR_888, w, h);
     rga_buffer_t dst_img = wrapbuffer_virtualaddr(dst_buf, w, h, RK_FORMAT_YCbCr_420_SP);
 
     im_rect rect = {0, 0, w, h};

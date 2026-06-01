@@ -78,6 +78,12 @@
 | 1 | [24_MPP_H265推流接入实现_H265_PUSH_IMPLEMENTATION.md](24_MPP_H265推流接入实现_H265_PUSH_IMPLEMENTATION.md) | 2026-05-30 | MPP H265编码+GStreamer推流完整实现 |
 | 2 | [25_非阻塞实时架构优化_REALTIME_NONBLOCK_ARCHITECTURE.md](25_非阻塞实时架构优化_REALTIME_NONBLOCK_ARCHITECTURE.md) | 2026-05-30 | 非阻塞实时推流架构，解决推理延迟问题 |
 
+### 八、性能优化（26篇）
+
+| 序号 | 文档名称 | 创建时间 | 说明 |
+|------|---------|---------|------|
+| 1 | [26_RGA_DMA内存优化_RGA_DMA_OPTIMIZATION.md](26_RGA_DMA内存优化_RGA_DMA_OPTIMIZATION.md) | 2026-05-30 | RGA DMA内存分配，解决回退CPU问题 |
+
 ---
 
 ### 八、源码参考（1篇）
