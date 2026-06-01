@@ -326,10 +326,15 @@ void streamerThread() {
     while (g_system_running) {
         auto frame_start = std::chrono::steady_clock::now();
 
-        cv::Mat final_grid = composer.getCurrentGrid();
-        if (final_grid.empty()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            continue;
+        // 零拷贝：直接读取grid buffer（锁保护下）
+        cv::Mat final_grid;
+        {
+            std::lock_guard<std::mutex> lock(composer.getMutex());
+            final_grid = composer.getCurrentGridRef();
+            if (final_grid.empty()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
+            }
         }
 
         auto t1 = std::chrono::steady_clock::now();

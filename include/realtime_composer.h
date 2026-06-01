@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <vector>
 #include <opencv2/opencv.hpp>
@@ -9,82 +10,69 @@
 #include "rknn_detector.h"
 
 /**
- * @brief 实时四宫格合成器
+ * @brief 实时四宫格合成器（零拷贝版）
  *
  * 核心设计：
- * 1. 共享画面缓冲区（1280x960 BGR）
- * 2. 每路独立更新自己的区域（640x480）
- * 3. 推流线程定时读取当前画面
- * 4. 推理结果异步叠加
+ * 1. 一块连续buffer（1280×960×3 BGR）
+ * 2. 每路拉流线程直接写入buffer的对应ROI区域
+ * 3. 推流线程直接读buffer地址，无需拷贝
+ * 4. 检测框直接画在buffer上
  *
- * 优势：
- * - 推流线程完全不阻塞
- * - 每路视频实时更新
- * - 推理结果异步叠加，有就显示，没有就显示原始画面
+ * 内存布局：
+ * ┌──────────┬──────────┐
+ * │ stream 0 │ stream 1 │  ← 每路直接写入
+ * │ (0,0)    │ (640,0)  │
+ * ├──────────┼──────────┤
+ * │ stream 2 │ stream 3 │
+ * │ (0,480)  │ (640,480)│
+ * └──────────┴──────────┘
+ *    1280 × 960
  */
 class RealtimeComposer {
 public:
     RealtimeComposer();
     ~RealtimeComposer();
 
-    /**
-     * @brief 初始化合成器
-     * @param grid_width 四宫格宽度（默认1280）
-     * @param grid_height 四宫格高度（默认960）
-     */
     void init(int grid_width = 1280, int grid_height = 960);
 
     /**
-     * @brief 更新某路视频帧（非阻塞）
-     * @param stream_id 流ID（0-3）
-     * @param frame BGR格式的视频帧（640x480）
+     * @brief 更新某路视频帧（直接写入grid buffer对应区域）
      */
     void updateFrame(int stream_id, const cv::Mat& frame);
 
     /**
-     * @brief 更新某路检测结果（非阻塞）
-     * @param stream_id 流ID（0-3）
-     * @param results 检测结果
+     * @brief 更新某路检测结果（直接在grid buffer上画框）
      */
     void updateDetectionResults(int stream_id, const std::vector<DetectResult>& results);
 
     /**
-     * @brief 获取当前四宫格画面（非阻塞）
-     * @return 当前画面的拷贝
+     * @brief 获取当前四宫格画面（零拷贝，返回grid buffer的clone）
      */
     cv::Mat getCurrentGrid();
 
     /**
-     * @brief 获取当前四宫格画面（零拷贝，需要外部加锁）
-     * @return 画面引用
+     * @brief 获取grid buffer的cv::Mat包装（不拷贝数据）
+     *        推流线程可以直接读取data指针
      */
-    const cv::Mat& getCurrentGridRef() const { static cv::Mat empty; return empty; }
+    cv::Mat getCurrentGridRef();
 
-    /**
-     * @brief 获取画面锁（用于零拷贝场景）
-     */
-    std::mutex& getMutex() { return frame_mutex_; }
+    std::mutex& getMutex() { return buffer_mutex_; }
 
 private:
-    /**
-     * @brief 在画面上绘制检测结果
-     * @param grid 目标画面
-     * @param stream_id 流ID
-     * @param results 检测结果
-     */
-    void drawDetections(cv::Mat& grid, int stream_id, const std::vector<DetectResult>& results);
+    void drawDetections(cv::Mat& roi, int stream_id, const std::vector<DetectResult>& results);
 
-    // 每路原始视频帧（不绘制检测框，保证干净）
-    cv::Mat frames_[4];
-    std::mutex frame_mutex_;
+    // 一块连续的grid buffer
+    uint8_t* grid_buffer_ = nullptr;
+    cv::Mat grid_mat_;          // 包装grid_buffer_的cv::Mat（不拥有数据）
 
     int grid_width_ = 1280;
     int grid_height_ = 960;
 
-    // 每路的ROI区域
+    // 每路的ROI区域（在grid中的位置）
     cv::Rect rois_[4];
 
-    // 每路的检测结果（异步更新）
+    // 每路的检测结果
     std::vector<DetectResult> detections_[4];
     std::mutex detection_mutexes_[4];
+    std::mutex buffer_mutex_;   // 保护grid_buffer_的写入
 };
