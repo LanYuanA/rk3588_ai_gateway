@@ -359,6 +359,14 @@ void streamerThread() {
         // 非阻塞：直接从实时合成器获取当前画面
         cv::Mat final_grid = composer.getCurrentGrid();
 
+        // DEBUG: 保存推流端第一帧（只保存一次）
+        static bool saved_streamer_frame = false;
+        if (!saved_streamer_frame && !final_grid.empty()) {
+            cv::imwrite("debug_streamer_grid.jpg", final_grid);
+            std::cout << "[DEBUG] 推流端保存四宫格画面: debug_streamer_grid.jpg" << std::endl;
+            saved_streamer_frame = true;
+        }
+
         auto t1_encode = std::chrono::steady_clock::now();
 
         // 转换为NV12格式

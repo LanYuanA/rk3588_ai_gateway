@@ -66,19 +66,33 @@ cv::Mat RealtimeComposer::getCurrentGrid() {
 void RealtimeComposer::drawDetections(cv::Mat& grid, int stream_id, const std::vector<DetectResult>& results) {
     cv::Mat roi = grid(rois_[stream_id]);
 
+    // 原始图像尺寸（推理输入是640x480）
+    const float src_width = 640.0f;
+    const float src_height = 480.0f;
+
+    // 计算缩放比例：原始图像 → ROI区域
+    float scale_x = static_cast<float>(rois_[stream_id].width) / src_width;
+    float scale_y = static_cast<float>(rois_[stream_id].height) / src_height;
+
     for (const auto& det : results) {
-        // det.box 是归一化坐标（0~1），需要映射到ROI区域
-        int x1 = static_cast<int>(det.box.x * rois_[stream_id].width);
-        int y1 = static_cast<int>(det.box.y * rois_[stream_id].height);
-        int x2 = x1 + static_cast<int>(det.box.width * rois_[stream_id].width);
-        int y2 = y1 + static_cast<int>(det.box.height * rois_[stream_id].height);
+        // det.box 是像素坐标（0~640），需要映射到ROI区域
+        int x1 = static_cast<int>(det.box.x * scale_x);
+        int y1 = static_cast<int>(det.box.y * scale_y);
+        int x2 = x1 + static_cast<int>(det.box.width * scale_x);
+        int y2 = y1 + static_cast<int>(det.box.height * scale_y);
+
+        // 边界检查
+        x1 = std::max(0, std::min(x1, rois_[stream_id].width - 1));
+        y1 = std::max(0, std::min(y1, rois_[stream_id].height - 1));
+        x2 = std::max(0, std::min(x2, rois_[stream_id].width - 1));
+        y2 = std::max(0, std::min(y2, rois_[stream_id].height - 1));
 
         // 绘制检测框
         cv::rectangle(roi, cv::Point(x1, y1), cv::Point(x2, y2),
                       cv::Scalar(0, 255, 0), 2);
 
         // 绘制标签
-        std::string label = "class:" + std::to_string(det.classId) + " " + cv::format("%.2f", det.confidence);
+        std::string label = "Face " + cv::format("%.2f", det.confidence);
         cv::putText(roi, label, cv::Point(x1, y1 - 5),
                     cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 2);
     }
