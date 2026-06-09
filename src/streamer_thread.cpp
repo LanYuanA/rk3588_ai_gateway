@@ -195,6 +195,7 @@ bool gstH265PushOpen(GstH265PushContext& ctx, const char* rtsp_url) {
     std::string desc = std::string(
         "appsrc name=src is-live=true block=false format=time "
         "caps=video/x-h265,stream-format=byte-stream,alignment=au,width=1280,height=960,framerate=30/1 "
+        "! queue max-size-buffers=3 leaky=downstream "
         "! h265parse config-interval=1 "
         "! rtspclientsink location=") + rtsp_url + " protocols=tcp";
 
@@ -321,23 +322,22 @@ void streamerThread() {
     }
 
     int frame_count = 0;
-    auto last_frame_start = std::chrono::steady_clock::now();
+    int slow_count = 0;         // 连续慢帧计数
+    constexpr int FRAME_INTERVAL_MS = 33;  // 30fps
+    auto next_frame_time = std::chrono::steady_clock::now();
 
     while (g_system_running) {
-        auto frame_start = std::chrono::steady_clock::now();
-
-        // 零拷贝：直接读取grid buffer（锁保护下）
+        // 每次都读最新的 grid buffer
         cv::Mat final_grid;
         {
             std::lock_guard<std::mutex> lock(composer.getMutex());
             final_grid = composer.getCurrentGridRef();
             if (final_grid.empty()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                next_frame_time = std::chrono::steady_clock::now();
                 continue;
             }
         }
-
-        auto t1 = std::chrono::steady_clock::now();
 
         if (use_mpp_encoder && use_h265_gst) {
             // MPP H265编码 + GStreamer推流
@@ -377,17 +377,32 @@ void streamerThread() {
         }
 
         frame_count++;
-        if (frame_count % 30 == 0) {
-            auto t2 = std::chrono::steady_clock::now();
-            int ms = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
-            std::string enc = (use_mpp_encoder && use_h265_gst) ? "MPP H265" : "GStreamer H264";
-            std::cout << "[推流] 第 " << frame_count << " 帧 编码耗时: " << ms << "ms 编码器=" << enc << std::endl;
+
+        // 关键：用绝对时间推进帧节奏，不用相对耗时
+        // 如果处理太慢，next_frame_time 会自动跳过多个间隔，保证不累积延迟
+        next_frame_time += std::chrono::milliseconds(FRAME_INTERVAL_MS);
+        auto now = std::chrono::steady_clock::now();
+
+        if (now > next_frame_time) {
+            // 已经落后了，跳过所有错过的时间点，直接取最新帧
+            slow_count++;
+            if (slow_count >= 30) {
+                // 连续30帧落后，重置时间基准（彻底清除累积延迟）
+                std::cerr << "[推流] 延迟累积，重置帧时间基准" << std::endl;
+                next_frame_time = now;
+                slow_count = 0;
+            }
+            // 不sleep，立刻循环取最新帧
+        } else {
+            slow_count = 0;
+            std::this_thread::sleep_until(next_frame_time);
         }
 
-        auto next_frame_time = frame_start + std::chrono::milliseconds(33);
-        auto now = std::chrono::steady_clock::now();
-        if (next_frame_time > now) {
-            std::this_thread::sleep_until(next_frame_time);
+        if (frame_count % 300 == 0) {
+            int64_t drift_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - next_frame_time).count();
+            std::string enc = (use_mpp_encoder && use_h265_gst) ? "MPP H265" : "GStreamer H264";
+            std::cout << "[推流] 已推送 " << frame_count << " 帧 漂移=" << drift_ms
+                      << "ms 编码器=" << enc << std::endl;
         }
     }
 

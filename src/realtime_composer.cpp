@@ -38,23 +38,32 @@ void RealtimeComposer::init(int grid_width, int grid_height) {
 void RealtimeComposer::updateFrame(int stream_id, const cv::Mat& frame) {
     if (stream_id < 0 || stream_id >= 4 || frame.empty()) return;
 
+    // 先读取该路最新检测结果（锁顺序：detection 先于 buffer，避免死锁）
+    std::vector<DetectResult> latest_dets;
+    {
+        std::lock_guard<std::mutex> dLock(detection_mutexes_[stream_id]);
+        latest_dets = detections_[stream_id];
+    }
+
     std::lock_guard<std::mutex> lock(buffer_mutex_);
 
-    // 直接写入grid buffer的对应ROI区域（零拷贝目标）
+    // 写入新帧
     cv::Mat roi_dst = grid_mat_(rois_[stream_id]);
     cv::resize(frame, roi_dst, rois_[stream_id].size());
+
+    // 立刻重画检测框，保证 buffer 里永远是"帧+框"
+    if (!latest_dets.empty()) {
+        drawDetections(roi_dst, stream_id, latest_dets);
+    }
 }
 
 void RealtimeComposer::updateDetectionResults(int stream_id, const std::vector<DetectResult>& results) {
     if (stream_id < 0 || stream_id >= 4) return;
 
-    // 保存检测结果
-    {
-        std::lock_guard<std::mutex> lock(detection_mutexes_[stream_id]);
-        detections_[stream_id] = results;
-    }
+    // 锁顺序：detection 先于 buffer（与 updateFrame 一致，避免死锁）
+    std::lock_guard<std::mutex> dLock(detection_mutexes_[stream_id]);
+    detections_[stream_id] = results;
 
-    // 直接在grid buffer上绘制检测框
     if (!results.empty()) {
         std::lock_guard<std::mutex> lock(buffer_mutex_);
         cv::Mat roi = grid_mat_(rois_[stream_id]);
